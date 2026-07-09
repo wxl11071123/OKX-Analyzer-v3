@@ -96,14 +96,11 @@ def _default_file_roots() -> list[Path]:
 
 def _default_run_roots() -> list[Path]:
     """Return default roots for generated backtest/tool run directories."""
-    from src.swarm.store import swarm_runs_root
-
     cwd = Path.cwd().resolve()
     home = Path.home().resolve()
     agent_root = _agent_root()
     return [
         agent_root / "runs",
-        swarm_runs_root(),
         cwd / "runs",
         home / ".vibe-trading" / "shadow_runs",
         home / ".vibe-trading" / "runs",

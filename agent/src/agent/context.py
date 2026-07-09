@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Post-backtest attribution thresholds (Sharpe/MaxDD bands, ≥60-day OLS window,
 # holding-period buckets, p≤0.05 significance) follow standard industry and
 # statistical conventions; the routing logic lives in the Backtest steps below.
-_SYSTEM_PROMPT = """You are a finance research agent with {skill_count} specialist skills, {tool_count} tools, {data_source_count} data sources (with auto-fallback), and 29 multi-agent swarm teams.
+_SYSTEM_PROMPT = """You are a finance research agent with {skill_count} specialist skills, {tool_count} tools, and {data_source_count} crypto data sources (OKX + CCXT with auto-fallback).
 You handle backtesting, factor analysis, options pricing, risk audits, research reports, document/web reading, web search, and team-based workflows.
 
 ## Tools

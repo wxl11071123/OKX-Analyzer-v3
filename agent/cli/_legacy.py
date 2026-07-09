@@ -4370,13 +4370,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skills", action="store_true", help="List skills")
     parser.add_argument("--max-iter", type=int, default=50, help="Maximum agent iterations")
 
-    parser.add_argument("--swarm-presets", action="store_true", help="List swarm presets")
-    parser.add_argument("--swarm-inspect", metavar="PRESET", help="Inspect a swarm preset without running it")
-    parser.add_argument("--swarm-run", nargs="+", metavar=("PRESET", "VARS"), help="Run a swarm preset")
-    parser.add_argument("--swarm-list", action="store_true", help="List swarm runs")
-    parser.add_argument("--swarm-show", metavar="RUN_ID", help="Show a swarm run")
-    parser.add_argument("--swarm-cancel", metavar="RUN_ID", help="Cancel a swarm run")
-
     parser.add_argument("--sessions", action="store_true", help="List sessions")
     parser.add_argument("--session-chat", metavar="SESSION_ID", help="Continue a session chat")
     parser.add_argument("--upload", metavar="FILE_PATH", help="Upload a file")
@@ -4587,10 +4580,6 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         p = connector_subparsers.add_parser(name, help=help_text)
         _add_connector_profile_arg(p)
-
-    # Alpha Zoo subcommands (registered via cli_handlers.add_subparser)
-    from src.factors.cli_handlers import add_subparser as _add_alpha_subparser
-    _add_alpha_subparser(subparsers)
 
     # Hypothesis Registry subcommands
     from src.hypotheses.cli_handlers import add_subparser as _add_hypothesis_subparser
@@ -5393,9 +5382,6 @@ def main(argv: list[str] | None = None) -> int:
         return _coerce_exit_code(cmd_show(args.show))
     if args.command == "chat":
         return _coerce_exit_code(cmd_interactive(args.chat_max_iter))
-    if args.command == "alpha":
-        from src.factors.cli_handlers import dispatch as _alpha_dispatch
-        return _coerce_exit_code(_alpha_dispatch(args))
     if args.command == "hypothesis":
         from src.hypotheses.cli_handlers import dispatch as _hyp_dispatch
         return _coerce_exit_code(_hyp_dispatch(args))
@@ -5425,23 +5411,6 @@ def main(argv: list[str] | None = None) -> int:
         return _coerce_exit_code(cmd_trace(args.trace))
     if args.skills:
         return _coerce_exit_code(cmd_skills())
-
-    if args.swarm_presets:
-        return _coerce_exit_code(cmd_swarm_presets())
-    if args.swarm_inspect:
-        return _coerce_exit_code(cmd_swarm_inspect(args.swarm_inspect))
-    if args.swarm_run:
-        parsed_swarm_run = _parse_swarm_run_args(args.swarm_run)
-        if parsed_swarm_run is None:
-            return EXIT_USAGE_ERROR
-        preset_name, vars_json = parsed_swarm_run
-        return _coerce_exit_code(cmd_swarm_run_live(preset_name, vars_json))
-    if args.swarm_list:
-        return _coerce_exit_code(cmd_swarm_list())
-    if args.swarm_show:
-        return _coerce_exit_code(cmd_swarm_show(args.swarm_show))
-    if args.swarm_cancel:
-        return _coerce_exit_code(cmd_swarm_cancel(args.swarm_cancel))
 
     if args.sessions:
         return _coerce_exit_code(cmd_sessions())

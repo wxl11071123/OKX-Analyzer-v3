@@ -119,9 +119,7 @@ def build_registry(
         StartResearchGoalTool,
         UpdateResearchGoalStatusTool,
     )
-    from src.tools.autopilot_tool import RunResearchAutopilotTool
     from src.tools.remember_tool import RememberTool
-    from src.tools.swarm_tool import SwarmTool
 
     goal_tool_classes = {
         StartResearchGoalTool,
@@ -131,7 +129,7 @@ def build_registry(
     }
     # Tools that need the host session id injected: they create or mutate the
     # session's research goal, and the LLM never knows the session id.
-    session_injected_classes = goal_tool_classes | {RunResearchAutopilotTool}
+    session_injected_classes = goal_tool_classes
     registry = ToolRegistry()
     for cls in _discover_subclasses():
         try:
@@ -145,8 +143,6 @@ def build_registry(
                 registry.register(cls(memory=persistent_memory))
             elif cls in session_injected_classes:
                 registry.register(cls(default_session_id=session_id, event_callback=event_callback))
-            elif cls is SwarmTool:
-                registry.register(cls(include_shell_tools=include_shell_tools, event_callback=event_callback))
             else:
                 registry.register(cls())
         except Exception as exc:

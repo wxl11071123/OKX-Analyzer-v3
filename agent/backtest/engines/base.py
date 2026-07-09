@@ -21,16 +21,12 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from backtest.loaders.rsshub_events import (
-    FeedSpec,
-    RSSHubEventProvider,
-    enrich_price_frames_with_events,
-    feed_specs_from_config,
-)
-from backtest.loaders.tushare_fundamentals import (
-    TushareFundamentalProvider,
-    enrich_price_frames_with_fundamentals,
-)
+# Crypto-only fork stubs — optional fundamental/event enrichment removed
+def enrich_price_frames_with_events(df, *args, **kwargs):
+    return df
+def enrich_price_frames_with_fundamentals(df, *args, **kwargs):
+    return df
+
 from backtest.metrics import (
     by_exit_reason_stats,
     by_symbol_stats,
