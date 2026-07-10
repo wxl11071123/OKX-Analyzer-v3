@@ -177,7 +177,11 @@ def get_trade_stats(
     conn.close()
 
     if not rows:
-        return {"total_trades": 0}
+        return {
+            "total_trades": 0, "win_count": 0, "loss_count": 0,
+            "win_rate": 0, "total_pnl": 0, "total_fee": 0,
+            "net_pnl": 0, "avg_discipline_score": 0,
+        }
 
     total_pnl = sum(r["pnl"] or 0 for r in rows)
     wins = sum(1 for r in rows if (r["pnl"] or 0) > 0)
