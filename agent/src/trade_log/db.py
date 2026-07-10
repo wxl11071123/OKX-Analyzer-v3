@@ -191,7 +191,18 @@ def get_trade_stats(
     total_pnl = sum(r["pnl"] or 0 for r in closed)
     wins = sum(1 for r in closed if (r["pnl"] or 0) > 0)
     losses = sum(1 for r in closed if (r["pnl"] or 0) < 0)
-    total_fee = sum(abs(r["fee"] or 0) for r in rows)
+    
+    # Fee: convert non-USDT fees to USD using trade price
+    total_fee = 0.0
+    for r in rows:
+        fee = abs(float(r["fee"] or 0))
+        ccy = r["fee_currency"] if r["fee_currency"] else ""
+        if ccy and ccy != "USDT":
+            price = abs(float(r["price"] or 0))
+            if price > 0:
+                total_fee += fee * price
+        else:
+            total_fee += fee
     
     return {
         "total_fills": len(rows),  # 总成交笔数
