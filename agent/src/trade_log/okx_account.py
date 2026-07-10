@@ -57,11 +57,11 @@ def get_account_balance() -> dict[str, Any]:
     upl = 0.0
 
     for item in data.get("data", []):
-        total_eq += float(item.get("totalEq", 0))
-        upl += float(item.get("upl", 0))
+        total_eq += float(item.get("totalEq") or 0)
+        upl += float(item.get("upl") or 0)
         for detail in item.get("details", []):
             if detail.get("ccy") == "USDT":
-                avail_usdt = float(detail.get("availBal", 0))
+                avail_usdt = float(detail.get("availBal") or 0)
 
     return {
         "total_equity": round(total_eq, 2),
@@ -84,7 +84,7 @@ def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
     result = []
     for item in data.get("data", []):
         pos_side = item.get("posSide", "net")
-        pos_qty = float(item.get("pos", 0))
+        pos_qty = float(item.get("pos") or 0)
         # Skip zero positions
         if abs(pos_qty) < 0.0001:
             continue
@@ -94,11 +94,11 @@ def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
             "symbol": item.get("instId", ""),
             "side": side,
             "quantity": abs(pos_qty),
-            "avg_price": float(item.get("avgPx", 0)),
-            "mark_price": float(item.get("markPx", 0)),
-            "unrealized_pnl": float(item.get("upl", 0)),
-            "unrealized_pnl_pct": float(item.get("uplRatio", 0)) * 100,
-            "notional": float(item.get("notionalUsd", 0)),
+            "avg_price": float(item.get("avgPx") or 0),
+            "mark_price": float(item.get("markPx") or 0),
+            "unrealized_pnl": float(item.get("upl") or 0),
+            "unrealized_pnl_pct": float(item.get("uplRatio") or 0) * 100,
+            "notional": float(item.get("notionalUsd") or 0),
         })
 
     # Also fetch SPOT balances
@@ -109,10 +109,10 @@ def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
     if data_spot.get("code") == "0":
         for item in data_spot.get("data", []):
             for detail in item.get("details", []):
-                qty = float(detail.get("availBal", 0))
+                qty = float(detail.get("availBal") or 0)
                 ccy = detail.get("ccy", "")
                 if qty > 0.0001 and ccy != "USDT":
-                    usd_value = float(detail.get("eqUsd", 0))
+                    usd_value = float(detail.get("eqUsd") or 0)
                     # Try to get current price
                     mark_price = usd_value / qty if qty > 0 else 0
                     result.append({
