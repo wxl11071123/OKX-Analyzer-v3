@@ -159,11 +159,16 @@ async def _run_startup_preflight() -> None:
     _start_scheduled_research_executor()
     if os.getenv("VIBE_TRADING_CHANNELS_AUTO_START", "").strip().lower() in {"1", "true", "yes"}:
         await _start_channel_runtime()
+    # Start push engine (price alerts + scheduled pushes)
+    from src.push.engine import start_push_engine
+    start_push_engine()
 
 
 @app.on_event("shutdown")
 async def _stop_scheduled_research_on_shutdown() -> None:
     """Stop the scheduled research executor on server shutdown."""
+    from src.push.engine import stop_push_engine
+    stop_push_engine()
     await _stop_channel_runtime()
     await _stop_scheduled_research_executor()
 
@@ -226,6 +231,9 @@ register_channels_routes(app)
 # --- News ---
 from src.api.news_routes import router as news_router  # noqa: E402
 app.include_router(news_router)
+# --- Push config ---
+from src.api.push_routes import router as push_router  # noqa: E402
+app.include_router(push_router)
 # --- Crypto-only fork: qveris/swarm/live/alpha removed ---
 
 
