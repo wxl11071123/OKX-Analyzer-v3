@@ -21,7 +21,10 @@ import httpx
 class OKXFillsClient:
     """OKX 成交历史拉取客户端（只读）。"""
 
-    BASE_URL = "https://www.okx.com"
+    BASE_URL = os.getenv("OKX_RELAY", "https://www.okx.com")
+
+    def _get_base_url(self) -> str:
+        return os.getenv("OKX_RELAY", "https://www.okx.com")
 
     def __init__(
         self,
@@ -89,7 +92,7 @@ class OKXFillsClient:
             params += f"&end={end}"
 
         headers = self._headers("GET", path + params)
-        resp = httpx.get(self.BASE_URL + path + params, headers=headers, timeout=30)
+        resp = httpx.get(self._get_base_url() + path + params, headers=headers, timeout=30)
         data = resp.json()
 
         if data.get("code") != "0":
@@ -122,7 +125,7 @@ class OKXFillsClient:
             params += f"&after={after}"
 
         headers = self._headers("GET", path + params)
-        resp = httpx.get(self.BASE_URL + path + params, headers=headers, timeout=30)
+        resp = httpx.get(self._get_base_url() + path + params, headers=headers, timeout=30)
         data = resp.json()
 
         if data.get("code") != "0":

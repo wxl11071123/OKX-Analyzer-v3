@@ -16,7 +16,8 @@ from typing import Any
 
 import httpx
 
-BASE_URL = "https://www.okx.com"
+def _get_base_url() -> str:
+    return os.getenv("OKX_RELAY", "https://www.okx.com")
 
 # 缓存（避免每次请求都打 OKX API）
 _cache: dict[str, tuple[float, Any]] = {}
@@ -67,7 +68,7 @@ def get_account_balance() -> dict[str, Any]:
 
 def _fetch_account_balance() -> dict[str, Any]:
     path = "/api/v5/account/balance"
-    resp = httpx.get(BASE_URL + path, headers=_headers("GET", path), timeout=10)
+    resp = httpx.get(_get_base_url() + path, headers=_headers("GET", path), timeout=30)
     data = resp.json()
 
     if data.get("code") != "0":
@@ -104,7 +105,7 @@ def _fetch_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
     # 1. 合约持仓（SWAP）
     if inst_type != "SPOT":
         path = f"/api/v5/account/positions?instType={inst_type}"
-        resp = httpx.get(BASE_URL + path, headers=_headers("GET", path), timeout=10)
+        resp = httpx.get(_get_base_url() + path, headers=_headers("GET", path), timeout=30)
         data = resp.json()
 
         if data.get("code") == "0":
@@ -129,7 +130,7 @@ def _fetch_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
     # 2. 现货持仓 + 成本价计算
     cost_basis = _calc_spot_cost_basis()
     path_spot = "/api/v5/account/balance"
-    resp_spot = httpx.get(BASE_URL + path_spot, headers=_headers("GET", path_spot), timeout=10)
+    resp_spot = httpx.get(_get_base_url() + path_spot, headers=_headers("GET", path_spot), timeout=30)
     data_spot = resp_spot.json()
 
     if data_spot.get("code") == "0":
