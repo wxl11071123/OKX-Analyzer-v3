@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from src.push.config import load_config
-from src.push.feishu_sender import send_feishu_text, _get_feishu_webhook
+from src.push.feishu_sender import send_feishu_text, _get_feishu_creds
 from src.push.translator import translate_articles
 from src.news import rss_collector
 
@@ -44,8 +44,9 @@ class PushEngine:
         if not config.get("enabled"):
             logger.info("推送未启用，跳过")
             return
-        if not _get_feishu_webhook():
-            logger.warning("飞书 webhook 未配置，推送不会发送")
+        app_id, secret, open_id, chat_id = _get_feishu_creds()
+        if not app_id or (not open_id and not chat_id):
+            logger.warning("飞书推送凭证未配置，推送不会发送")
             return
 
         self._running = True
