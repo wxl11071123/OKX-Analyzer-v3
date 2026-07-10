@@ -1,13 +1,20 @@
 """交易日志 API 路由。"""
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body
+import sys
+
 from src.trade_log import db as trade_db
 from src.trade_log.okx_client import OKXFillsClient
 
 router = APIRouter(prefix="/trade-log", tags=["trade-log"])
 
+# Late-bind auth dependency from host api_server
+def _get_require_auth():
+    host = sys.modules.get("api_server") or sys.modules.get("agent.api_server")
+    return host.require_auth if host else (lambda: None)
 
-@router.get("")
+
+@router.get("", dependencies=[Depends(_get_require_auth)])
 async def get_trades(symbol: str = "", inst_type: str = "", limit: int = 50):
     try:
         trade_db.init_db()
@@ -20,7 +27,7 @@ async def get_trades(symbol: str = "", inst_type: str = "", limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(_get_require_auth)])
 async def get_stats():
     try:
         trade_db.init_db()
@@ -29,7 +36,7 @@ async def get_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/sync")
+@router.post("/sync", dependencies=[Depends(_get_require_auth)])
 async def sync_trades(inst_type: str = ""):
     """手动同步成交记录。inst_type: SPOT 或 SWAP，不传则两者都同步。"""
     client = OKXFillsClient()
@@ -47,7 +54,7 @@ async def sync_trades(inst_type: str = ""):
     return {"status": "ok", "synced": results}
 
 
-@router.patch("/{trade_id}")
+@router.patch("/{trade_id}", dependencies=[Depends(_get_require_auth)])
 async def update_trade(
     trade_id: str,
     note: str = Body(""),

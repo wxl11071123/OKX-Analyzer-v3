@@ -1,15 +1,20 @@
 """News API routes — serve RSS news via German VPS relay."""
 
 import os
+import sys
 import httpx
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException
 
 router = APIRouter(prefix="/news", tags=["news"])
 
 RELAY_URL = os.getenv("OKX_RELAY", "http://127.0.0.1:8080")
 
+def _get_require_auth():
+    host = sys.modules.get("api_server") or sys.modules.get("agent.api_server")
+    return host.require_auth if host else (lambda: None)
 
-@router.get("")
+
+@router.get("", dependencies=[Depends(_get_require_auth)])
 async def get_news(
     keyword: str = Query(default="", description="Keyword filter"),
     source: str = Query(default="", description="Source filter"),
@@ -32,7 +37,7 @@ async def get_news(
     return articles[:min(limit, 100)]
 
 
-@router.get("/sources")
+@router.get("/sources", dependencies=[Depends(_get_require_auth)])
 async def get_news_sources():
     """Get RSS source status."""
     return [
