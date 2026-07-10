@@ -170,6 +170,8 @@ def _calc_spot_cost_basis() -> dict[str, dict[str, float]]:
         from src.trade_log import db as trade_db
         trade_db.init_db()
         trades = trade_db.query_trades(inst_type="SPOT", limit=1000)
+        # FIFO 需要从早到晚排列
+        trades.sort(key=lambda t: t.get("fill_time", 0))
     except Exception:
         return {}
 
@@ -195,13 +197,19 @@ def _calc_spot_cost_basis() -> dict[str, dict[str, float]]:
             basis[ccy]["total_cost"] += price * qty
             basis[ccy]["total_qty"] += qty
         elif side == "sell":
-            # 卖出时按比例减少持仓成本
             if basis[ccy]["total_qty"] > 0:
-                ratio = qty / basis[ccy]["total_qty"]
-                basis[ccy]["total_cost"] *= (1 - ratio)
-                basis[ccy]["total_qty"] = max(0, basis[ccy]["total_qty"] - qty)
+                # 卖出时按比例减少持仓成本（FIFO 近似）
+                remaining = max(0, basis[ccy]["total_qty"] - qty)
+                ratio = remaining / basis[ccy]["total_qty"] if basis[ccy]["total_qty"] > 0 else 0
+                basis[ccy]["total_cost"] *= ratio
+                basis[ccy]["total_qty"] = remaining
+            else:
+                # 已经没有持仓了，卖出只影响 PnL 不计入成本
+                pass
 
         if basis[ccy]["total_qty"] > 0:
             basis[ccy]["avg_price"] = basis[ccy]["total_cost"] / basis[ccy]["total_qty"]
+        else:
+            basis[ccy]["avg_price"] = 0
 
     return basis
