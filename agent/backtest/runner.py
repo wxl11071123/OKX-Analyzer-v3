@@ -12,12 +12,24 @@ import importlib.util
 import inspect
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, model_validator, field_validator
+
+# ── Relay monkey-patch: redirect OKX API through German VPS ──
+_OKX_RELAY = os.getenv("OKX_RELAY")
+if _OKX_RELAY:
+    import requests as _requests
+    _real_get = _requests.get
+    def _get(url, **kw):
+        if "www.okx.com" in url:
+            url = url.replace("https://www.okx.com", _OKX_RELAY.rstrip("/"))
+        return _real_get(url, **kw)
+    _requests.get = _get
 
 try:
     from dotenv import load_dotenv

@@ -40,6 +40,7 @@ _RUNTIME_ENV_KEYS = frozenset(
         "TMPDIR",
         "TEMP",
         "TMP",
+        "OKX_RELAY",
         "SYSTEMROOT",
         "WINDIR",
         "COMSPEC",
