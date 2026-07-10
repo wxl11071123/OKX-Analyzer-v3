@@ -130,9 +130,11 @@ def _check_okx() -> CheckResult:
     """Check OKX public API reachability."""
     try:
         import requests
+        import os
 
+        base = os.getenv("OKX_RELAY", "https://www.okx.com")
         resp = requests.get(
-            "https://www.okx.com/api/v5/market/candles",
+            f"{base.rstrip('/')}/api/v5/market/candles",
             params={"instId": "BTC-USDT", "bar": "1D", "limit": "1"},
             timeout=10,
         )
