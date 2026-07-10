@@ -723,7 +723,9 @@
     "noTrades": "暂无交易记录，请先配置 OKX API 并同步数据。",
     "save": "保存",
     "saved": "已保存",
-    "loading": "加载中…"
+    "loading": "加载中…",
+    "notRated": "未评价",
+    "insufficientData": "数据不足"
   },
   "newsCenter": {
     "title": "新闻中心",

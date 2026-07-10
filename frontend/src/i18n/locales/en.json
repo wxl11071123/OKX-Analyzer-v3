@@ -776,7 +776,9 @@
     "noTrades": "No trade records. Please configure OKX API and sync data first.",
     "save": "Save",
     "saved": "Saved",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "notRated": "Not rated",
+    "insufficientData": "Insufficient data"
   },
   "newsCenter": {
     "title": "News Center",

@@ -181,7 +181,7 @@ export function TradeLog() {
           <StatCard
             icon={<Target className="h-5 w-5" />}
             label={t("tradeLog.avgDiscipline")}
-            value={`${fmt(stats.avg_discipline_score, 1)}/10`}
+            value={stats.scored_trades === 0 ? t("tradeLog.insufficientData") : `${fmt(stats.avg_discipline_score, 1)}/10`}
           />
         </div>
       )}
@@ -259,7 +259,8 @@ export function TradeLog() {
                         <input
                           type="number"
                           className="w-16 min-h-[44px] px-2 py-1 border rounded bg-background text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/20"
-                          value={ed?.disciplineScore ?? entry.discipline_score}
+                          value={ed?.disciplineScore || entry.discipline_score || ""}
+                          placeholder={t("tradeLog.notRated")}
                           min={1}
                           max={10}
                           onChange={(e) => {
@@ -339,7 +340,8 @@ export function TradeLog() {
                       <input
                         type="number"
                         className="w-full min-h-[44px] px-2 py-1 border rounded bg-background text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/20"
-                        value={ed?.disciplineScore ?? entry.discipline_score}
+                        value={ed?.disciplineScore || entry.discipline_score || ""}
+                        placeholder={t("tradeLog.notRated")}
                         min={1}
                         max={10}
                         onChange={(e) => {
