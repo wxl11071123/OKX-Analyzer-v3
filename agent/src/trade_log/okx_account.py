@@ -168,7 +168,7 @@ def _calc_spot_cost_basis() -> dict[str, dict[str, float]]:
     """
     try:
         from src.trade_log import db as trade_db
-        db.init_db()
+        trade_db.init_db()
         trades = trade_db.query_trades(inst_type="SPOT", limit=1000)
     except Exception:
         return {}
