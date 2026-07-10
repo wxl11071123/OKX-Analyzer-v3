@@ -28,6 +28,24 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def recalc_all_spot_pnl() -> int:
+    """重新计算所有现货的 FIFO 盈亏。返回更新的记录数。"""
+    conn = _get_conn()
+    spots = conn.execute(
+        "SELECT * FROM trade_log WHERE inst_type='SPOT' ORDER BY fill_time ASC"
+    ).fetchall()
+    spots = [dict(r) for r in spots]
+    _calc_spot_pnl(conn, spots)
+    updated = 0
+    for t in spots:
+        conn.execute("UPDATE trade_log SET pnl = ? WHERE trade_id = ?", (t.get("pnl", 0), t["trade_id"]))
+        if conn.total_changes > 0:
+            updated += 1
+    conn.commit()
+    conn.close()
+    return updated
+
+
 def init_db() -> None:
     """初始化数据库表结构。"""
     conn = _get_conn()
@@ -62,6 +80,41 @@ def init_db() -> None:
     conn.close()
 
 
+def _calc_spot_pnl(conn: sqlite3.Connection, trades: list[dict[str, Any]]) -> None:
+    """对现货卖出，用 FIFO 计算盈亏并更新 pnl 字段。"""
+    spots = [t for t in trades if t.get("inst_type") == "SPOT"]
+    spots.sort(key=lambda t: t["fill_time"])
+
+    # Running cost basis per symbol
+    lots: dict[str, list[dict[str, Any]]] = {}  # symbol → [{price, qty}, ...]
+
+    for t in spots:
+        sym = t["symbol"]
+        side = t["side"]
+        price = float(t["price"])
+        qty = float(t["quantity"])
+
+        if sym not in lots:
+            lots[sym] = []
+
+        if side == "buy":
+            lots[sym].append({"price": price, "qty": qty, "fill_time": t["fill_time"]})
+        elif side == "sell" and lots[sym]:
+            remaining = qty
+            total_pnl = 0.0
+            while remaining > 0 and lots[sym]:
+                lot = lots[sym][0]
+                matched = min(remaining, lot["qty"])
+                pnl = (price - lot["price"]) * matched
+                total_pnl += pnl
+                lot["qty"] -= matched
+                remaining -= matched
+                if lot["qty"] <= 0:
+                    lots[sym].pop(0)
+            # Update pnl on this sell
+            t["pnl"] = round(total_pnl, 8)
+
+
 def insert_trades(trades: list[dict[str, Any]]) -> int:
     """批量插入成交记录（重复 trade_id 自动忽略）。
 
@@ -74,6 +127,9 @@ def insert_trades(trades: list[dict[str, Any]]) -> int:
     now = int(datetime.now(timezone.utc).timestamp())
     conn = _get_conn()
     inserted = 0
+
+    # First, compute spot PnL for sells using FIFO
+    _calc_spot_pnl(conn, trades)
 
     for t in trades:
         try:
