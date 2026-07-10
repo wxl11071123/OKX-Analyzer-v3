@@ -73,35 +73,36 @@ def get_account_balance() -> dict[str, Any]:
 
 
 def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
-    """获取当前持仓。"""
-    path = f"/api/v5/account/positions?instType={inst_type}"
-    resp = httpx.get(BASE_URL + path, headers=_headers("GET", path), timeout=10)
-    data = resp.json()
-
-    if data.get("code") != "0":
-        raise RuntimeError(f"OKX API error: {data.get('msg', 'unknown')}")
-
+    """获取当前持仓（含现货成本价计算）。"""
     result = []
-    for item in data.get("data", []):
-        pos_side = item.get("posSide", "net")
-        pos_qty = float(item.get("pos") or 0)
-        # Skip zero positions
-        if abs(pos_qty) < 0.0001:
-            continue
 
-        side = "long" if (pos_side == "long" or (pos_side == "net" and pos_qty > 0)) else "short"
-        result.append({
-            "symbol": item.get("instId", ""),
-            "side": side,
-            "quantity": abs(pos_qty),
-            "avg_price": float(item.get("avgPx") or 0),
-            "mark_price": float(item.get("markPx") or 0),
-            "unrealized_pnl": float(item.get("upl") or 0),
-            "unrealized_pnl_pct": float(item.get("uplRatio") or 0) * 100,
-            "notional": float(item.get("notionalUsd") or 0),
-        })
+    # 1. 合约持仓（SWAP）
+    if inst_type != "SPOT":
+        path = f"/api/v5/account/positions?instType={inst_type}"
+        resp = httpx.get(BASE_URL + path, headers=_headers("GET", path), timeout=10)
+        data = resp.json()
 
-    # Also fetch SPOT balances
+        if data.get("code") == "0":
+            for item in data.get("data", []):
+                pos_side = item.get("posSide", "net")
+                pos_qty = float(item.get("pos") or 0)
+                if abs(pos_qty) < 0.0001:
+                    continue
+
+                side = "long" if (pos_side == "long" or (pos_side == "net" and pos_qty > 0)) else "short"
+                result.append({
+                    "symbol": item.get("instId", ""),
+                    "side": side,
+                    "quantity": abs(pos_qty),
+                    "avg_price": float(item.get("avgPx") or 0),
+                    "mark_price": float(item.get("markPx") or 0),
+                    "unrealized_pnl": float(item.get("upl") or 0),
+                    "unrealized_pnl_pct": float(item.get("uplRatio") or 0) * 100,
+                    "notional": float(item.get("notionalUsd") or 0),
+                })
+
+    # 2. 现货持仓 + 成本价计算
+    cost_basis = _calc_spot_cost_basis()
     path_spot = "/api/v5/account/balance"
     resp_spot = httpx.get(BASE_URL + path_spot, headers=_headers("GET", path_spot), timeout=10)
     data_spot = resp_spot.json()
@@ -113,17 +114,69 @@ def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
                 ccy = detail.get("ccy", "")
                 if qty > 0.0001 and ccy != "USDT":
                     usd_value = float(detail.get("eqUsd") or 0)
-                    # Try to get current price
                     mark_price = usd_value / qty if qty > 0 else 0
+                    cb = cost_basis.get(ccy, {})
+                    avg_price = cb.get("avg_price", 0)
+                    total_cost = cb.get("total_cost", 0)
+                    pnl = (mark_price - avg_price) * qty if avg_price > 0 else 0
+                    pnl_pct = ((mark_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+
                     result.append({
                         "symbol": f"{ccy}-USDT",
                         "side": "long",
                         "quantity": qty,
-                        "avg_price": 0.0,
+                        "avg_price": round(avg_price, 4),
                         "mark_price": round(mark_price, 4),
-                        "unrealized_pnl": 0.0,
-                        "unrealized_pnl_pct": 0.0,
+                        "unrealized_pnl": round(pnl, 4),
+                        "unrealized_pnl_pct": round(pnl_pct, 2),
                         "notional": usd_value,
                     })
 
     return result
+
+
+def _calc_spot_cost_basis() -> dict[str, dict[str, float]]:
+    """从成交记录计算现货持仓成本价。
+
+    Returns:
+        {ccy: {"avg_price": x, "total_cost": y, "total_qty": z}}
+    """
+    try:
+        from src.trade_log import db as trade_db
+        db.init_db()
+        trades = trade_db.query_trades(inst_type="SPOT", limit=1000)
+    except Exception:
+        return {}
+
+    if not trades:
+        return {}
+
+    basis: dict[str, dict[str, float]] = {}
+    for t in trades:
+        symbol = t.get("symbol", "")
+        if not symbol.endswith("-USDT"):
+            continue
+        ccy = symbol.replace("-USDT", "")
+        side = t.get("side", "")
+        price = float(t.get("price") or 0)
+        qty = float(t.get("quantity") or 0)
+        if price <= 0 or qty <= 0:
+            continue
+
+        if ccy not in basis:
+            basis[ccy] = {"total_cost": 0, "total_qty": 0, "avg_price": 0}
+
+        if side == "buy":
+            basis[ccy]["total_cost"] += price * qty
+            basis[ccy]["total_qty"] += qty
+        elif side == "sell":
+            # 卖出时按比例减少持仓成本
+            if basis[ccy]["total_qty"] > 0:
+                ratio = qty / basis[ccy]["total_qty"]
+                basis[ccy]["total_cost"] *= (1 - ratio)
+                basis[ccy]["total_qty"] = max(0, basis[ccy]["total_qty"] - qty)
+
+        if basis[ccy]["total_qty"] > 0:
+            basis[ccy]["avg_price"] = basis[ccy]["total_cost"] / basis[ccy]["total_qty"]
+
+    return basis
