@@ -1,6 +1,6 @@
 """交易日志 API 路由。"""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from src.trade_log import db as trade_db
 from src.trade_log.okx_client import OKXFillsClient
 
@@ -48,7 +48,11 @@ async def sync_trades(inst_type: str = ""):
 
 
 @router.patch("/{trade_id}")
-async def update_trade(trade_id: str, note: str = "", discipline_score: int = 0):
+async def update_trade(
+    trade_id: str,
+    note: str = Body(""),
+    discipline_score: int = Body(0),
+):
     updated = False
     if note:
         updated = trade_db.update_note(trade_id, note) or updated
