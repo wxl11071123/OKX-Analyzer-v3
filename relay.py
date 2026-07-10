@@ -1,7 +1,15 @@
 from flask import Flask, request, Response
-import requests
+import requests, json
 
 app = Flask(__name__)
+
+@app.route("/news-feed")
+def news_feed():
+    try:
+        with open("/root/news_cache.json") as f:
+            return json.load(f)
+    except:
+        return []
 
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 def relay(path):
