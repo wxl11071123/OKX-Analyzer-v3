@@ -1030,6 +1030,7 @@ export interface TradeStats {
   total_fee: number;
   net_pnl: number;
   avg_discipline_score: number;
+  scored_trades: number;
 }
 
 export interface TradeLogParams {

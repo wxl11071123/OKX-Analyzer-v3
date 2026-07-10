@@ -237,7 +237,7 @@ def get_trade_stats(
             "total_fills": 0, "closed_trades": 0, "open_positions": 0,
             "win_count": 0, "loss_count": 0,
             "win_rate": 0, "total_pnl": 0, "total_fee": 0,
-            "net_pnl": 0, "avg_discipline_score": 0,
+                        "net_pnl": 0, "avg_discipline_score": 0, "scored_trades": 0,
         }
 
     # Separate closed (有盈亏) vs open (未平仓/现货)
@@ -269,11 +269,12 @@ def get_trade_stats(
         "win_rate": round(wins / len(closed), 4) if closed else 0,
         "total_pnl": round(total_pnl, 8),
         "total_fee": round(total_fee, 8),
-        "net_pnl": round(total_pnl - total_fee, 8),
         "net_pnl": round(total_pnl - abs(total_fee), 8),
         "avg_discipline_score": round(
-            sum(r["discipline_score"] or 0 for r in rows) / len(rows), 1
+            sum(r["discipline_score"] or 0 for r in rows if (r["discipline_score"] or 0) > 0)
+            / max(1, sum(1 for r in rows if (r["discipline_score"] or 0) > 0)), 1
         ) if rows else 0,
+        "scored_trades": sum(1 for r in rows if (r["discipline_score"] or 0) > 0),
     }
 
 
