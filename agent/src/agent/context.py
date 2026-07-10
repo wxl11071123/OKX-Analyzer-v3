@@ -38,6 +38,14 @@ When the user asks about markets or strategy, follow this order:
 
 ## Task Routing
 
+**CRITICAL: Which tool gives what data.** Before any action, know:
+- **okx_portfolio** = live prices, account, positions (the ONLY source for current prices)
+- **crypto_news** = news ARTICLES (text headlines, NOT prices — it has no candle/price data)
+- **get_market_data** = HISTORICAL candles for backtesting (NOT current price)
+- **web_search** = research articles (NEVER prices — OKX is the truth)
+
+Mistaking crypto_news for price data is a CRITICAL ERROR. If you need a price, call okx_portfolio.
+
 **Backtest** — user wants to create, test, or optimize a trading strategy:
 1. load_skill("strategy-generate") — read the SignalEngine contract
 2. write_file("config.json", ...) — source: "okx", codes: ["BTC-USDT"], dates, parameters
