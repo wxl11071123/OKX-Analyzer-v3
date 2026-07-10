@@ -31,24 +31,8 @@ _registered = False
 # Keep in sync with ``_loader_modules`` below — the regression test
 # ``test_valid_sources_covers_all_registered_loaders`` enforces full coverage.
 VALID_SOURCES: set[str] = {
-    "tushare",
     "okx",
-    "yfinance",
-    "akshare",
-    "baostock",
-    "tencent",
-    "mootdx",
     "ccxt",
-    "futu",
-    "eastmoney",
-    "sina",
-    "stooq",
-    "yahoo",
-    "finnhub",
-    "alphavantage",
-    "tiingo",
-    "fmp",
-    "qveris",  # QVERIS-INTEGRATION
     "local",
     "auto",
 }
@@ -76,24 +60,8 @@ def _ensure_registered() -> None:
     _registered = True
 
     _loader_modules = [
-        "backtest.loaders.tushare",
         "backtest.loaders.okx",
-        "backtest.loaders.yfinance_loader",
-        "backtest.loaders.akshare_loader",
-        "backtest.loaders.baostock_loader",
-        "backtest.loaders.tencent_loader",
-        "backtest.loaders.mootdx_loader",
         "backtest.loaders.ccxt_loader",
-        "backtest.loaders.futu",
-        "backtest.loaders.eastmoney_loader",
-        "backtest.loaders.sina_loader",
-        "backtest.loaders.stooq_loader",
-        "backtest.loaders.yahoo_loader",
-        "backtest.loaders.finnhub_loader",
-        "backtest.loaders.alphavantage_loader",
-        "backtest.loaders.tiingo_loader",
-        "backtest.loaders.fmp_loader",
-        "backtest.loaders.qveris_loader",  # QVERIS-INTEGRATION
         "backtest.loaders.local_loader",
     ]
     import importlib
@@ -111,27 +79,16 @@ def _ensure_registered() -> None:
 # unavailable ``local`` request can degrade into an unrelated network source.
 # An explicit ``local`` request that is unavailable is a config problem the user
 # must see, not something to paper over with a Yahoo/Tencent fetch.
-_NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local", "qveris"})  # QVERIS-INTEGRATION
+_NO_NETWORK_FALLBACK_SOURCES: frozenset[str] = frozenset({"local"})
 
 
 # ---------------------------------------------------------------------------
 # Fallback chains: market_type -> ordered list of source names
 # ---------------------------------------------------------------------------
 
-# Chains are ordered by IP-ban risk first (lighter, throttle-tolerant public
-# endpoints lead; key-gated REST and rate-limit-prone sources trail), then by
-# data quality. Eastmoney/Sina/Stooq/Yahoo are unauthenticated public sources
-# that must be politely throttled; Finnhub/AlphaVantage/Tiingo/FMP are key-gated
-# REST fallbacks placed deeper in the chain.
+# Crypto-only fork — only crypto market type supported.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "a_share":   ["tencent", "mootdx", "eastmoney", "baostock", "akshare", "tushare", "local"],
-    "us_equity": ["yahoo", "stooq", "sina", "eastmoney", "yfinance", "tiingo", "fmp", "finnhub", "alphavantage", "akshare", "local"],
-    "hk_equity": ["eastmoney", "yahoo", "futu", "yfinance", "akshare", "local"],
-    "crypto":    ["okx", "ccxt", "yfinance", "local"],
-    "futures":   ["tushare", "akshare", "local"],
-    "fund":      ["tushare", "akshare", "local"],
-    "macro":     ["akshare", "tushare", "local"],
-    "forex":     ["akshare", "yfinance", "local"],
+    "crypto": ["okx", "ccxt", "local"],
 }
 
 
