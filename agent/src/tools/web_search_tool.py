@@ -17,6 +17,8 @@ import os
 import time
 from typing import Any
 
+import requests
+
 from src.agent.tools import BaseTool
 from src.security.scanner import with_security_warnings
 
@@ -170,17 +172,23 @@ class WebSearchTool(BaseTool):
     repeatable = True
 
     def execute(self, **kwargs: Any) -> str:
-        """Run a web search across free engines with retry and backend fallback.
-
-        Args:
-            **kwargs: Must include query; optionally max_results.
-
-        Returns:
-            JSON envelope with status, query, the backend list used, and results
-            (or an actionable error message on persistent failure).
-        """
         query = kwargs["query"]
         max_results = min(int(kwargs.get("max_results", 5)), 10)
+
+        # Fast path: use OKX relay search (Google via DDG Lite on German VPS)
+        relay = os.getenv("OKX_RELAY", "")
+        if relay:
+            try:
+                import httpx
+                resp = httpx.get(f"{relay}/search?q={requests.utils.quote(query)}", timeout=15)
+                if resp.is_success:
+                    raw = resp.json()
+                    if isinstance(raw, list) and raw and "error" not in str(raw[0]):
+                        results = [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("snippet", "")} for r in raw[:max_results]]
+                        payload = {"status": "ok", "query": query, "backends": "relay_ddg", "results": results}
+                        return json.dumps(payload, ensure_ascii=False)
+            except Exception:
+                pass  # Fall through to cn.bing.com
         backends = os.getenv("VIBE_TRADING_SEARCH_BACKENDS", _DEFAULT_BACKENDS).strip() or "auto"
 
         # Fast path: Alibaba Cloud IQS if configured (official API, CN-direct,
