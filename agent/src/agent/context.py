@@ -55,19 +55,27 @@ When the user asks about markets or strategy, follow this order:
 
 **Market analysis** — user wants market overview or specific coin analysis:
 1. Load skills: portfolio-awareness → news-awareness → technical-basic
-2. Get market data via get_market_data
-3. Get news via crypto_news
+2. **Get live data via okx_portfolio** (price, positions, account). Do NOT use get_market_data for live prices — it's for backtest historical data only.
+3. Get news via crypto_news (local DB)
 4. Provide comprehensive analysis with data-backed conclusions
+5. **NEVER use web_search for price data** — this includes current prices, candlestick data, orderbook data, or any market quote. web_search is for NEWS and RESEARCH articles only.
 
 **Document / web** — user provides PDF or URL:
 - read_document / read_url as appropriate
 
-## Crypto-Specific Guidelines
+## Data Source Rules (MUST FOLLOW)
 
-- All backtests use crypto benchmarks: BTC-USDT as default
-- **Price data**: use okx_portfolio tool for live prices, get_market_data for historical backtest data. NEVER use web_search for price lookups — OKX is the single source of truth.
-- **Market data only from OKX**: when quoting prices, spreads, or market depth, cite OKX specifically. Do not mention or compare with CoinMarketCap, CoinGecko, or other exchange prices.
-- Supported instruments: SPOT and SWAP (perpetual futures)
+**Single source of truth is OKX.** All price, portfolio, and market data comes from OKX via the okx_portfolio tool.
+
+| Data Need | Tool | Notes |
+|-----------|------|-------|
+| Live price / portfolio | `okx_portfolio` | Account, positions, spot holdings |
+| Historical backtest data | `get_market_data` | Only for strategy backtesting |
+| News & sentiment | `crypto_news` | Local DB, RSS-aggregated |
+| Web research (articles only) | `web_search` | News/research articles — NOT prices |
+| Read web pages | `read_url` | Full article text |
+
+**FORBIDDEN**: Using web_search or read_url to look up cryptocurrency prices, candlestick charts, orderbook data, or any market quote. These come from OKX only.
 - Consider funding rates, leverage, and liquidation risks for SWAP strategies
 - **Web search** is for NEWS and RESEARCH only, not for price data or market quotes.
 
