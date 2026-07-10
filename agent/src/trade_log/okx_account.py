@@ -18,6 +18,23 @@ import httpx
 
 BASE_URL = "https://www.okx.com"
 
+# 缓存（避免每次请求都打 OKX API）
+_cache: dict[str, tuple[float, Any]] = {}
+CACHE_TTL = 30  # 30 秒缓存
+
+
+def _cached(key: str, fetcher):
+    """带缓存的 API 调用。"""
+    import time
+    now = time.time()
+    if key in _cache:
+        ts, val = _cache[key]
+        if now - ts < CACHE_TTL:
+            return val
+    val = fetcher()
+    _cache[key] = (now, val)
+    return val
+
 
 def _sign(timestamp: str, method: str, path: str, body: str = "") -> str:
     secret = os.getenv("OKX_API_SECRET", "")
@@ -44,7 +61,11 @@ def is_configured() -> bool:
 
 
 def get_account_balance() -> dict[str, Any]:
-    """获取账户余额（总权益、可用余额、未实现盈亏）。"""
+    """获取账户余额（带缓存）。"""
+    return _cached("balance", _fetch_account_balance)
+
+
+def _fetch_account_balance() -> dict[str, Any]:
     path = "/api/v5/account/balance"
     resp = httpx.get(BASE_URL + path, headers=_headers("GET", path), timeout=10)
     data = resp.json()
@@ -73,7 +94,11 @@ def get_account_balance() -> dict[str, Any]:
 
 
 def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
-    """获取当前持仓（含现货成本价计算）。"""
+    """获取当前持仓（带缓存）。"""
+    return _cached(f"positions_{inst_type}", lambda: _fetch_positions(inst_type))
+
+
+def _fetch_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
     result = []
 
     # 1. 合约持仓（SWAP）
