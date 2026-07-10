@@ -102,7 +102,7 @@ def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
             "notional": float(item.get("notionalUsd", 0)),
         })
 
-    # Also fetch SPOT balances as "positions"
+    # Also fetch SPOT balances
     path_spot = "/api/v5/account/balance"
     resp_spot = httpx.get(BASE_URL + path_spot, headers=_headers("GET", path_spot), timeout=10)
     data_spot = resp_spot.json()
@@ -111,16 +111,20 @@ def get_positions(inst_type: str = "SWAP") -> list[dict[str, Any]]:
         for item in data_spot.get("data", []):
             for detail in item.get("details", []):
                 qty = float(detail.get("availBal", 0))
-                if qty > 0.0001 and detail.get("ccy") != "USDT":
+                ccy = detail.get("ccy", "")
+                if qty > 0.0001 and ccy != "USDT":
+                    usd_value = float(detail.get("eqUsd", 0))
+                    # Try to get current price
+                    mark_price = usd_value / qty if qty > 0 else 0
                     result.append({
-                        "symbol": f"{detail['ccy']}-USDT",
+                        "symbol": f"{ccy}-USDT",
                         "side": "long",
                         "quantity": qty,
-                        "avg_price": 0,
-                        "mark_price": 0,
-                        "unrealized_pnl": 0,
-                        "unrealized_pnl_pct": 0,
-                        "notional": float(detail.get("eqUsd", 0)),
+                        "avg_price": 0.0,
+                        "mark_price": round(mark_price, 4),
+                        "unrealized_pnl": 0.0,
+                        "unrealized_pnl_pct": 0.0,
+                        "notional": usd_value,
                     })
 
     return result
