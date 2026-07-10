@@ -178,10 +178,12 @@ class PushEngine:
 
     @staticmethod
     def _fetch_ticker(symbol: str) -> dict | None:
+        import os
+        relay = os.getenv("OKX_RELAY", "https://www.okx.com")
         try:
             resp = httpx.get(
-                f"https://www.okx.com/api/v5/market/ticker?instId={symbol}",
-                timeout=10,
+                f"{relay}/api/v5/market/ticker?instId={symbol}",
+                timeout=15,
             )
             data = resp.json()
             if data.get("code") == "0" and data.get("data"):
