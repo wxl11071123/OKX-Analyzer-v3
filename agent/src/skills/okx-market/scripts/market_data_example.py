@@ -8,7 +8,8 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-BASE_URL = "https://www.okx.com/api/v5"
+import os
+BASE_URL = os.getenv("OKX_RELAY", "https://www.okx.com") + "/api/v5"
 
 
 def get_ticker(inst_id: str) -> Optional[dict]:

@@ -546,9 +546,9 @@ def _fetch_okx(inst_id: str, bar: str = "1D", limit: int = 300) -> pd.DataFrame:
     Raises:
         KeyError: 当 API 返回格式异常时。
     """
-    import requests
-
-    resp = requests.get("https://www.okx.com/api/v5/market/candles", params={
+    import os, requests
+    base = os.getenv("OKX_RELAY", "https://www.okx.com")
+    resp = requests.get(f"{base.rstrip('/')}/api/v5/market/candles", params={
         "instId": inst_id, "bar": bar, "limit": str(limit)
     })
     candles = resp.json()["data"]

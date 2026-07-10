@@ -257,10 +257,10 @@ def _fetch_okx(inst_id: str, bar: str = "1D", limit: int = 300) -> pd.DataFrame:
     Returns:
         OHLCV DataFrame，index 为 datetime。
     """
-    import requests
-
+    import os, requests
+    base = os.getenv("OKX_RELAY", "https://www.okx.com")
     resp = requests.get(
-        "https://www.okx.com/api/v5/market/candles",
+        f"{base.rstrip('/')}/api/v5/market/candles",
         params={"instId": inst_id, "bar": bar, "limit": str(limit)},
     )
     candles = resp.json()["data"]
