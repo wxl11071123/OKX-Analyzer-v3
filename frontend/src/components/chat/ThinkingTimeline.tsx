@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useState, useEffect, useMemo, memo } from "react";
+import { useState, useMemo, memo } from "react";
 import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Circle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { localizeToolName } from "@/lib/tools";
@@ -10,18 +10,14 @@ interface Props {
   isLatest?: boolean;
 }
 
-export const ThinkingTimeline = memo(function ThinkingTimeline({ messages, isLatest = false }: Props) {
+export const ThinkingTimeline = memo(function ThinkingTimeline({ messages, isLatest: _isLatest = false }: Props) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(isLatest);
+  const [expanded, setExpanded] = useState(true);
 
   const toolLabel = (tool?: string): string => {
     if (!tool) return t('thinking.processing');
     return localizeToolName(tool);
   };
-
-  useEffect(() => {
-    if (!isLatest) setExpanded(false);
-  }, [isLatest]);
 
   const { steps, hasError, isRunning, totalMs, latestTool, latestThinking } = useMemo(() => {
     let totalMs = 0;
