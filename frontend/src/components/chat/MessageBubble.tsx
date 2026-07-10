@@ -1,6 +1,6 @@
 import i18n from '@/i18n';
 import { memo, useState, useCallback } from "react";
-import { User, XCircle, RefreshCw, Copy, Check } from "lucide-react";
+import { User, XCircle, RefreshCw, Copy, Check, Pencil } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -45,16 +45,26 @@ function getRetryHint(content: string): string {
 interface Props {
   msg: AgentMessage;
   onRetry?: (msg: AgentMessage) => void;
+  onEdit?: (content: string) => void;
 }
 
-export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props) {
+export const MessageBubble = memo(function MessageBubble({ msg, onRetry, onEdit }: Props) {
   const ts = msg.timestamp ? formatTimestamp(msg.timestamp) : null;
 
   if (msg.type === "user") {
     return (
       <div className="flex justify-end gap-3 group">
-        <div className="max-w-[72%] rounded-2xl rounded-tr-sm bg-primary text-primary-foreground px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap">
+        <div className="max-w-[72%] rounded-2xl rounded-tr-sm bg-primary text-primary-foreground px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap relative">
           {msg.content}
+          {onEdit ? (
+            <button
+              onClick={() => onEdit(msg.content)}
+              className="absolute top-2 left-2 p-1 rounded-md bg-primary-foreground/10 hover:bg-primary-foreground/20 text-primary-foreground/60 hover:text-primary-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+              title={i18n.t("messageBubble.edit")}
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+          ) : null}
           {ts && <span className="block text-[9px] opacity-50 text-right mt-1">{ts}</span>}
         </div>
         <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center shrink-0 mt-0.5">

@@ -83,7 +83,7 @@ export function TradeLog() {
     setSyncing(true);
     try {
       await api.syncTradeLogs();
-      fetchData(true);
+      fetchData(false);
     } catch (e) {
       console.error(e);
     } finally {

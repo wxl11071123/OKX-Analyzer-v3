@@ -667,7 +667,8 @@
     "copy": "复制",
     "timeoutHint": "执行超时。请尝试简化策略或减少资产数量。",
     "apiFailedHint": "API 调用失败。请稍后重试。",
-    "executionFailedHint": "执行失败。点击重试。"
+    "executionFailedHint": "执行失败。点击重试。",
+    "edit": "编辑"
   },
   "pineViewer": {
     "pineScript": "Pine Script v6",

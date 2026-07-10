@@ -725,7 +725,8 @@
     "copy": "Copy",
     "timeoutHint": "Execution timed out. Try simplifying the strategy or reducing the number of assets.",
     "apiFailedHint": "API call failed. Please retry later.",
-    "executionFailedHint": "Execution failed. Click to retry."
+    "executionFailedHint": "Execution failed. Click to retry.",
+    "edit": "Edit"
   },
   "pineViewer": {
     "pineScript": "Pine Script v6",

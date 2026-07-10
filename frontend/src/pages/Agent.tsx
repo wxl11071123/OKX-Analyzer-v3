@@ -1032,6 +1032,11 @@ export function Agent() {
     }
   }, [forceScrollToBottom, goalSnapshot, sessionId, setupSSE, status, syncCompletedAttempt]);
 
+  const handleEdit = useCallback((content: string) => {
+    setInput(content);
+    setTimeout(() => inputRef?.current?.focus(), 50);
+  }, [inputRef]);
+
   const handleRetry = useCallback((errorMsg: AgentMessage) => {
     if (status === "streaming") return;
     const msgs = act().messages;
@@ -1213,7 +1218,7 @@ export function Agent() {
             }
             return (
               <div key={row.key} data-msg-idx={msgIdx}>
-                <MessageBubble msg={g.msg} onRetry={g.msg.type === "error" ? handleRetry : undefined} />
+                <MessageBubble msg={g.msg} onRetry={g.msg.type === "error" ? handleRetry : undefined} onEdit={g.msg.type === "user" ? handleEdit : undefined} />
               </div>
             );
           })}
