@@ -170,7 +170,7 @@ export function TradeLog() {
           <StatCard
             icon={stats.win_rate > 50 ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}
             label={t("tradeLog.winRate")}
-            value={`${fmt(stats.win_rate, 1)}%`}
+            value={`${fmt(stats.win_rate * 100, 1)}%`}
           />
           <StatCard
             icon={stats.total_pnl > 0 ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}
