@@ -73,8 +73,8 @@ class PushEngine:
         today_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H:%M")
 
-        # 0. 自动同步交易日志（每 6 小时一次）
-        if self._running and time.time() - self._last_trade_sync > 21600:
+        # 0. 自动同步交易日志（每 5 分钟一次兜底）
+        if self._running and time.time() - self._last_trade_sync > 300:
             self._last_trade_sync = time.time()
             self._sync_trade_logs()
 

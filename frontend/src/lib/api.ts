@@ -231,6 +231,8 @@ export const api = {
     return request<TradeLogEntry[]>(`/trade-log${qs ? `?${qs}` : ""}`);
   },
   getTradeStats: () => request<TradeStats>("/trade-log/stats"),
+  syncTradeLogs: () =>
+    request<{ status: string; synced: Record<string, number> }>("/trade-log/sync", { method: "POST" }),
   updateTradeNote: (id: string, body: { note?: string; discipline_score?: number }) =>
     request<{ status: string }>(`/trade-log/${id}`, {
       method: "PATCH",

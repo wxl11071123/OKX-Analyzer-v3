@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { TrendingUp, TrendingDown, Target, Search, Save } from "lucide-react";
+import { TrendingUp, TrendingDown, Target, Search, Save, RefreshCw } from "lucide-react";
 import { api, type TradeLogEntry, type TradeStats } from "@/lib/api";
 
 // ── 每行编辑状�?───────────────────────────────────────────
@@ -36,6 +36,7 @@ export function TradeLog() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [syncing, setSyncing] = useState(false);
 
   // 每行的编辑缓�? trade_id �?RowEditState
   const [edits, setEdits] = useState<Record<string, RowEditState>>({});
@@ -75,6 +76,18 @@ export function TradeLog() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await api.syncTradeLogs();
+      fetchData();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // ── 编辑操作 ──────────────────────────────────────────────
   function updateEdit(tradeId: string, patch: Partial<RowEditState>) {
@@ -128,9 +141,20 @@ export function TradeLog() {
   return (
     <div className="max-w-6xl mx-auto p-4 md:p-6 lg:p-8 space-y-6">
       {/* 标题 */}
-      <div>
-        <h1 className="text-xl md:text-2xl font-bold">{t("tradeLog.title")}</h1>
-        <p className="text-sm text-muted-foreground mt-1">{t("tradeLog.subtitle")}</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl md:text-2xl font-bold">{t("tradeLog.title")}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{t("tradeLog.subtitle")}</p>
+        </div>
+        <button
+          onClick={handleSync}
+          disabled={syncing}
+          className="min-h-[44px] px-4 py-2 border rounded-lg flex items-center gap-2 text-sm hover:bg-accent disabled:opacity-50 transition-colors"
+          title="同步 OKX 成交记录"
+        >
+          <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
+          <span className="hidden sm:inline">{syncing ? "同步中..." : "同步"}</span>
+        </button>
       </div>
 
       {/* 统计卡片 */}

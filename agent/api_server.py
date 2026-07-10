@@ -237,6 +237,9 @@ app.include_router(push_router)
 # --- Trading (read-only) ---
 from src.api.trading_routes import router as trading_router  # noqa: E402
 app.include_router(trading_router)
+# --- Trade Log API ---
+from src.api.trade_log_routes import router as trade_log_router  # noqa: E402
+app.include_router(trade_log_router)
 # --- Crypto-only fork: qveris/swarm/live/alpha removed ---
 
 
