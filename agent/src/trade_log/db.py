@@ -178,23 +178,31 @@ def get_trade_stats(
 
     if not rows:
         return {
-            "total_trades": 0, "win_count": 0, "loss_count": 0,
+            "total_fills": 0, "closed_trades": 0, "open_positions": 0,
+            "win_count": 0, "loss_count": 0,
             "win_rate": 0, "total_pnl": 0, "total_fee": 0,
             "net_pnl": 0, "avg_discipline_score": 0,
         }
 
-    total_pnl = sum(r["pnl"] or 0 for r in rows)
-    wins = sum(1 for r in rows if (r["pnl"] or 0) > 0)
-    losses = sum(1 for r in rows if (r["pnl"] or 0) < 0)
-    total_fee = sum(r["fee"] or 0 for r in rows)
-
+    # Separate closed (有盈亏) vs open (未平仓/现货)
+    closed = [r for r in rows if (r["pnl"] or 0) != 0]
+    opened = [r for r in rows if (r["pnl"] or 0) == 0]
+    
+    total_pnl = sum(r["pnl"] or 0 for r in closed)
+    wins = sum(1 for r in closed if (r["pnl"] or 0) > 0)
+    losses = sum(1 for r in closed if (r["pnl"] or 0) < 0)
+    total_fee = sum(abs(r["fee"] or 0) for r in rows)
+    
     return {
-        "total_trades": len(rows),
+        "total_fills": len(rows),  # 总成交笔数
+        "closed_trades": len(closed),  # 已平仓交易
+        "open_positions": len(opened),  # 未平仓/开仓
         "win_count": wins,
         "loss_count": losses,
-        "win_rate": round(wins / len(rows), 4) if rows else 0,
+        "win_rate": round(wins / len(closed), 4) if closed else 0,
         "total_pnl": round(total_pnl, 8),
         "total_fee": round(total_fee, 8),
+        "net_pnl": round(total_pnl - total_fee, 8),
         "net_pnl": round(total_pnl - abs(total_fee), 8),
         "avg_discipline_score": round(
             sum(r["discipline_score"] or 0 for r in rows) / len(rows), 1

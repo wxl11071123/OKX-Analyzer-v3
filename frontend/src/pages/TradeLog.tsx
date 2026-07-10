@@ -165,7 +165,7 @@ export function TradeLog() {
           <StatCard
             icon={<Target className="h-5 w-5" />}
             label={t("tradeLog.tradeCount")}
-            value={String(stats.total_trades)}
+            value={`${stats.closed_trades}`}
           />
           <StatCard
             icon={stats.win_rate > 50 ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}

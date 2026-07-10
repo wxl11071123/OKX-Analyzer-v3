@@ -1020,7 +1020,9 @@ export interface TradeLogEntry {
 }
 
 export interface TradeStats {
-  total_trades: number;
+  total_fills: number;
+  closed_trades: number;
+  open_positions: number;
   win_count: number;
   loss_count: number;
   win_rate: number;
