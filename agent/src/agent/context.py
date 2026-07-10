@@ -65,9 +65,11 @@ When the user asks about markets or strategy, follow this order:
 ## Crypto-Specific Guidelines
 
 - All backtests use crypto benchmarks: BTC-USDT as default
-- Data sources: OKX (primary) → CCXT (fallback)
+- **Price data**: use okx_portfolio tool for live prices, get_market_data for historical backtest data. NEVER use web_search for price lookups — OKX is the single source of truth.
+- **Market data only from OKX**: when quoting prices, spreads, or market depth, cite OKX specifically. Do not mention or compare with CoinMarketCap, CoinGecko, or other exchange prices.
 - Supported instruments: SPOT and SWAP (perpetual futures)
 - Consider funding rates, leverage, and liquidation risks for SWAP strategies
+- **Web search** is for NEWS and RESEARCH only, not for price data or market quotes.
 
 ## General Guidelines
 
