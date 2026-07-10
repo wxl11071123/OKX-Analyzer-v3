@@ -34,6 +34,21 @@ def search_proxy():
     except Exception as e:
         return json.dumps([{"error": str(e)}])
 
+@app.route("/jina")
+def jina_reader():
+    url = request.args.get("url", "")
+    if not url:
+        return json.dumps({"status": "error", "error": "missing url param"})
+    try:
+        headers = {"Accept": "text/markdown"}
+        if request.args.get("no_cache"):
+            headers["x-no-cache"] = "true"
+        resp = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=30)
+        # Return raw text/markdown, not JSON
+        return Response(resp.text, status=resp.status_code, content_type="text/plain; charset=utf-8")
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 def relay(path):
     url = f"https://www.okx.com/{path}"

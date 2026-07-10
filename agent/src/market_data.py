@@ -5,11 +5,44 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ── Monkey-patch: force backtest OKX loader to use relay ──
+def _patch_okx_loader():
+    """Replace backtest OKX loader's direct www.okx.com access with relay proxy."""
+    relay = os.getenv("OKX_RELAY")
+    if not relay:
+        return
+    try:
+        import backtest.loaders.okx
+        # The loader fetches candles from www.okx.com — replace with relay
+        _orig_fetch = backtest.loaders.okx.DataLoader.fetch
+        def _patched_fetch(self, *args, **kwargs):
+            # Temporarily redirect import-level requests.get to use relay
+            import requests as _r
+            _orig_get = _r.get
+            def _relayed_get(url, **kw):
+                if "www.okx.com" in url:
+                    url = url.replace("https://www.okx.com", relay.rstrip("/"))
+                return _orig_get(url, **kw)
+            try:
+                _r.get = _relayed_get
+                return _orig_fetch(self, *args, **kwargs)
+            finally:
+                _r.get = _orig_get
+        backtest.loaders.okx.DataLoader.fetch = _patched_fetch
+        logger.info("Patched backtest OKX loader to use relay: %s", relay)
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning("Failed to patch OKX loader: %s", e)
+
+_patch_okx_loader()
 
 DEFAULT_MAX_ROWS = 250
 

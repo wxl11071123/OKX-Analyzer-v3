@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _JINA_PREFIX = "https://r.jina.ai/"
 _RELAY = os.getenv("OKX_RELAY", "")
-_TIMEOUT = 30
+_JINA_VIA_RELAY = f"{_RELAY}/jina?url=" if _RELAY else None
 _MAX_LENGTH = 8000
 _CACHED_MARKER = "Warning: This is a cached snapshot"
 
@@ -88,13 +88,16 @@ def read_url(url: str, no_cache: bool = False) -> str:
             "fetching",
             message=f"GET {target_url[:60]}{'…' if len(target_url) > 60 else ''}",
         )
-        proxies = {"http": _RELAY, "https": _RELAY} if _RELAY else None
-        resp = requests.get(
-            f"{_JINA_PREFIX}{target_url}",
-            headers=headers,
-            timeout=_TIMEOUT,
-            proxies=proxies,
-        )
+        if _JINA_VIA_RELAY:
+            fetch_url = f"{_JINA_VIA_RELAY}{target_url}"
+            if no_cache:
+                fetch_url += "&no_cache=1"
+            resp = requests.get(fetch_url, timeout=_TIMEOUT)
+        else:
+            headers = {"Accept": "text/markdown"}
+            if no_cache:
+                headers["x-no-cache"] = "true"
+            resp = requests.get(f"{_JINA_PREFIX}{target_url}", headers=headers, timeout=_TIMEOUT)
         emit_progress("parsing", message="extracting markdown")
         if resp.status_code != 200:
             logger.warning("read_url upstream HTTP %s: %s", resp.status_code, resp.text[:500])
