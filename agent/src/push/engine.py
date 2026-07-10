@@ -36,6 +36,7 @@ class PushEngine:
         self._last_price_alert: dict[str, float] = {}  # symbol → last alert time
         self._last_hourly: float = 0
         self._last_news_sent: dict[str, bool] = {}  # "HH:MM" → already sent today
+        self._last_trade_sync: float = 0  # last trade log sync time
 
     def start(self):
         if self._running:
@@ -71,6 +72,11 @@ class PushEngine:
         now = datetime.now(TZ_BEIJING)
         today_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H:%M")
+
+        # 0. 自动同步交易日志（每 6 小时一次）
+        if self._running and time.time() - self._last_trade_sync > 21600:
+            self._last_trade_sync = time.time()
+            self._sync_trade_logs()
 
         # 1. 价格预警
         if config.get("price_alerts", {}).get("enabled"):
@@ -194,6 +200,28 @@ class PushEngine:
         except Exception:
             pass
         return None
+
+
+    @staticmethod
+    def _sync_trade_logs():
+        """自动同步 OKX 成交记录到本地数据库。"""
+        try:
+            from src.trade_log.okx_client import OKXFillsClient
+            from src.trade_log import db as trade_db
+
+            client = OKXFillsClient()
+            if not client.is_configured():
+                return
+
+            trade_db.init_db()
+            for inst_type in ("SPOT", "SWAP"):
+                fills = client.fetch_all_history(inst_type=inst_type)
+                if fills:
+                    n = trade_db.insert_trades(fills)
+                    if n > 0:
+                        logger.info(f"自动同步 {inst_type} 成交记录: {n} 条")
+        except Exception:
+            pass
 
 
 # 全局单例
