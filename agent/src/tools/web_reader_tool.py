@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import ipaddress
 import json
 import logging
@@ -16,6 +17,7 @@ from src.security.scanner import with_security_warnings
 logger = logging.getLogger(__name__)
 
 _JINA_PREFIX = "https://r.jina.ai/"
+_RELAY = os.getenv("OKX_RELAY", "")
 _TIMEOUT = 30
 _MAX_LENGTH = 8000
 _CACHED_MARKER = "Warning: This is a cached snapshot"
@@ -86,10 +88,12 @@ def read_url(url: str, no_cache: bool = False) -> str:
             "fetching",
             message=f"GET {target_url[:60]}{'…' if len(target_url) > 60 else ''}",
         )
+        proxies = {"http": _RELAY, "https": _RELAY} if _RELAY else None
         resp = requests.get(
             f"{_JINA_PREFIX}{target_url}",
             headers=headers,
             timeout=_TIMEOUT,
+            proxies=proxies,
         )
         emit_progress("parsing", message="extracting markdown")
         if resp.status_code != 200:
