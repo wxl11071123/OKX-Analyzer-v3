@@ -129,8 +129,8 @@ def query_trades(
     params: list[Any] = []
 
     if symbol:
-        sql += " AND symbol = ?"
-        params.append(symbol)
+        sql += " AND symbol LIKE ?"
+        params.append(f"%{symbol}%")
     if inst_type:
         sql += " AND inst_type = ?"
         params.append(inst_type)
@@ -161,8 +161,8 @@ def get_trade_stats(
     params: list[Any] = []
 
     if symbol:
-        sql += " AND symbol = ?"
-        params.append(symbol)
+        sql += " AND symbol LIKE ?"
+        params.append(f"%{symbol}%")
     if inst_type:
         sql += " AND inst_type = ?"
         params.append(inst_type)

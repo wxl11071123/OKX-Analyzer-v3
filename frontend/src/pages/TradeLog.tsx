@@ -42,7 +42,7 @@ export function TradeLog() {
   const [edits, setEdits] = useState<Record<string, RowEditState>>({});
 
   // ── 数据加载 ──────────────────────────────────────────────
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (resetEdits: boolean = false) => {
     setLoading(true);
     setError(null);
     try {
@@ -55,17 +55,19 @@ export function TradeLog() {
       setTrades(tradesRes);
       setStats(statsRes);
 
-      // 初始化编辑缓存
-      const initialEdits: Record<string, RowEditState> = {};
-      for (const entry of tradesRes) {
-        initialEdits[entry.trade_id] = {
-          note: entry.note ?? "",
-          disciplineScore: entry.discipline_score,
-          saving: false,
-          saved: false,
-        };
+      // 只在首次加载或同步后重置编辑缓存
+      if (resetEdits || Object.keys(edits).length === 0) {
+        const initialEdits: Record<string, RowEditState> = {};
+        for (const entry of tradesRes) {
+          initialEdits[entry.trade_id] = {
+            note: entry.note ?? "",
+            disciplineScore: entry.discipline_score,
+            saving: false,
+            saved: false,
+          };
+        }
+        setEdits(initialEdits);
       }
-      setEdits(initialEdits);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -74,14 +76,14 @@ export function TradeLog() {
   }, [searchQuery]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    fetchData(Object.keys(edits).length === 0);
+  }, [searchQuery]); // eslint-disable-line
 
   const handleSync = async () => {
     setSyncing(true);
     try {
       await api.syncTradeLogs();
-      fetchData();
+      fetchData(true);
     } catch (e) {
       console.error(e);
     } finally {
@@ -194,11 +196,11 @@ export function TradeLog() {
             placeholder={t("tradeLog.searchPlaceholder")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && fetchData()}
+            onKeyDown={(e) => e.key === "Enter" && fetchData(true)}
           />
         </div>
         <button
-          onClick={fetchData}
+          onClick={() => fetchData(true)}
           className="min-h-[44px] px-4 border rounded-lg text-sm font-medium hover:bg-muted transition-colors"
           type="button"
         >
