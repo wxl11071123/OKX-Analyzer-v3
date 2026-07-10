@@ -53,22 +53,21 @@ def get_account_balance() -> dict[str, Any]:
         raise RuntimeError(f"OKX API error: {data.get('msg', 'unknown')}")
 
     total_eq = 0.0
-    avail = 0.0
+    avail_usdt = 0.0
     upl = 0.0
 
     for item in data.get("data", []):
+        total_eq += float(item.get("totalEq", 0))
+        upl += float(item.get("upl", 0))
         for detail in item.get("details", []):
             if detail.get("ccy") == "USDT":
-                total_eq = float(detail.get("eq", 0))
-                avail = float(detail.get("availBal", 0))
-                upl = float(detail.get("upl", 0))
-                break
+                avail_usdt = float(detail.get("availBal", 0))
 
     return {
-        "total_equity": total_eq,
-        "available_balance": avail,
-        "unrealized_pnl": upl,
-        "realized_pnl": 0.0,  # OKX balance API doesn't provide this directly
+        "total_equity": round(total_eq, 2),
+        "available_balance": round(avail_usdt, 2),
+        "unrealized_pnl": round(upl, 2),
+        "realized_pnl": 0.0,
         "currency": "USDT",
     }
 
