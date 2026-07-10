@@ -223,51 +223,10 @@ from src.api.uploads_routes import (  # noqa: F401, E402
 # --- Channels ---
 from src.api.channels_routes import register_channels_routes  # noqa: E402
 register_channels_routes(app)
-from src.api.qveris_routes import qveris_router  # noqa: E402  # QVERIS-INTEGRATION
-app.include_router(qveris_router)  # QVERIS-INTEGRATION
-
-from src.api.channels_routes import (  # noqa: F401, E402
-    ChannelPairingCommandRequest,
-)
-
-# --- Swarm ---
-from src.api.swarm_routes import register_swarm_routes  # noqa: E402
-register_swarm_routes(app)
-
-from src.api.swarm_routes import _get_swarm_runtime  # noqa: F401, E402
-
-# --- Live trading ---
-from src.api.live_routes import register_live_routes  # noqa: E402
-register_live_routes(app)
-
-from src.api.live_routes import (  # noqa: F401, E402
-    CommitMandateRequest,
-    LiveHaltRequest,
-    LiveAuthorizeRequest,
-    LiveRunnerControlRequest,
-    BrokerAuthState,
-    MandateLimits,
-    ActiveMandateState,
-    RunnerLivenessState,
-    LiveBrokerStatus,
-    LiveStatusResponse,
-    LiveRunnerUnavailable,
-    _runner_tasks,
-    _runner_factory,
-    _emit_live_event,
-    _fetch_broker_ceilings,
-    _known_live_brokers,
-    _oauth_token_present,
-    _active_mandate_state,
-    _runner_liveness_state,
-    _live_broker_adapter,
-    _build_live_runner,
-    _drive_runner,
-)
-
-# --- Alpha Zoo ---
-from src.api.alpha_routes import register_alpha_routes  # noqa: E402
-register_alpha_routes(app)
+# --- News ---
+from src.api.news_routes import router as news_router  # noqa: E402
+app.include_router(news_router)
+# --- Crypto-only fork: qveris/swarm/live/alpha removed ---
 
 
 # ============================================================================

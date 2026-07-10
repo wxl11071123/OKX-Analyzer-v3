@@ -1176,7 +1176,7 @@ export function Agent() {
               ))}
             </div>
           )}
-          {!sessionLoading && messages.length === 0 && <WelcomeScreen onExample={runPrompt} />}
+          {!sessionLoading && messages.length === 0 && <WelcomeScreen onPrompt={runPrompt} />}
 
           {timelineRows.map((row, rowIdx) => {
             if (row.render === "live") {

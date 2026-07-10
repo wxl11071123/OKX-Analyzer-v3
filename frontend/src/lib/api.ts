@@ -221,6 +221,36 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ broker }),
     }),
+
+  // Trade Log API
+  getTradeLog: (params?: TradeLogParams) => {
+    const q = new URLSearchParams();
+    if (params?.symbol) q.set("symbol", params.symbol);
+    if (params?.limit !== undefined) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return request<TradeLogEntry[]>(`/trade-log${qs ? `?${qs}` : ""}`);
+  },
+  getTradeStats: () => request<TradeStats>("/trade-log/stats"),
+  updateTradeNote: (id: string, body: { note?: string; discipline_score?: number }) =>
+    request<{ status: string }>(`/trade-log/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  // News API
+  getNews: (params?: NewsParams) => {
+    const q = new URLSearchParams();
+    if (params?.keyword) q.set("keyword", params.keyword);
+    if (params?.source) q.set("source", params.source);
+    if (params?.limit !== undefined) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return request<NewsItem[]>(`/news${qs ? `?${qs}` : ""}`);
+  },
+  getNewsSources: () => request<NewsSource[]>("/news/sources"),
+
+  // Portfolio (read-only trading connector)
+  getTradingAccount: () => request<TradingAccount>("/trading/account"),
+  getTradingPositions: () => request<TradingPosition[]>("/trading/positions"),
 };
 
 // --- Swarm types ---
@@ -971,4 +1001,76 @@ export interface MessageItem {
   created_at: string;
   linked_attempt_id?: string;
   metadata?: Record<string, unknown>;
+}
+
+// --- Trade Log types ---
+
+export interface TradeLogEntry {
+  trade_id: string;
+  symbol: string;
+  side: string;
+  price: number;
+  pnl: number;
+  fee: number;
+  fill_time: number;
+  note?: string;
+  discipline_score: number;
+}
+
+export interface TradeStats {
+  total_trades: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number;
+  total_pnl: number;
+  total_fee: number;
+  net_pnl: number;
+  avg_discipline_score: number;
+}
+
+export interface TradeLogParams {
+  symbol?: string;
+  limit?: number;
+}
+
+// --- News types ---
+
+export interface NewsItem {
+  title: string;
+  source: string;
+  summary: string;
+  published_at: string;
+  link: string;
+}
+
+export interface NewsParams {
+  keyword?: string;
+  source?: string;
+  limit?: number;
+}
+
+export interface NewsSource {
+  name: string;
+  status: "connected" | "error";
+}
+
+// --- Portfolio types ---
+
+export interface TradingAccount {
+  total_equity: number;
+  available_balance: number;
+  unrealized_pnl: number;
+  realized_pnl: number;
+  currency: string;
+}
+
+export interface TradingPosition {
+  symbol: string;
+  side: string;
+  quantity: number;
+  avg_price: number;
+  mark_price: number;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+  notional: number;
 }

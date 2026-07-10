@@ -52,7 +52,7 @@ i18n
     // (persisted to localStorage) switches language. After a manual choice
     // the navigator value can act as a fallback when the saved language is
     // removed.
-    fallbackLng: "en",
+    fallbackLng: "zh-CN",
     supportedLngs: SUPPORTED_LANGUAGES.map((l) => l.code),
     // NOTE: Intentionally NOT using nonExplicitSupportedLngs — it strips
     // region codes from compound language keys like "zh-CN" which causes
