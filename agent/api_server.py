@@ -234,6 +234,9 @@ app.include_router(news_router)
 # --- Push config ---
 from src.api.push_routes import router as push_router  # noqa: E402
 app.include_router(push_router)
+# --- Trading (read-only) ---
+from src.api.trading_routes import router as trading_router  # noqa: E402
+app.include_router(trading_router)
 # --- Crypto-only fork: qveris/swarm/live/alpha removed ---
 
 
