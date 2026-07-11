@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class SerialConfig:
     """串行引擎配置。"""
     initial_capital: float = 150.0
-    capital_per_trade: float = 50.0          # 每份资金
+    capital_per_trade: float = 50.0          # 每份资金（动态升降级，初始值）
     btc_leverage: float = 10.0
     altcoin_leverage: float = 5.0
     maker_rate: float = 0.0002
@@ -47,11 +47,16 @@ class SerialConfig:
     # 时间退出（bar 数）
     btc_max_holding_bars: int = 90            # 15 天 × 6 bar/天 (4H)
     alt_max_holding_bars: int = 24            # 24 小时 (1H)
+    # 信号冷却：同一币种 N bar 内不重复发信号
+    signal_cooldown_bars: int = 6
     # 币种优先级：数字越小优先级越高
     symbol_priority: dict = field(default_factory=lambda: {
         "BTC-USDT": 0,
-        "ETH-USDT": 1,
     })
+    # 升降级阈值（基于总权益）
+    upgrade_threshold: float = 2.0            # 总资金翻倍 -> 每份资金翻倍
+    downgrade_threshold: float = 0.5          # 总资金腰斩 -> 每份资金减半
+    tier_bases: tuple = (75.0, 150.0, 300.0, 600.0, 1200.0)  # 标准档位
 
 
 @dataclass
@@ -85,6 +90,14 @@ class SerialCryptoEngine:
         self._atr_at_entry: float = 0.0
         self._profit_tiers_taken: int = 0
         self._entry_bar_idx: int = 0
+        self._bar_idx: int = 0
+
+        # 信号冷却：symbol -> 上次信号产生的 bar_idx
+        self._last_signal_bar: dict[str, int] = {}
+
+        # 动态资金管理
+        self._current_tier_capital: float = config.capital_per_trade  # 当前每份资金
+        self._tier_history: list[dict] = []  # 升降级记录
         self._max_holding_bars: int = 0
 
         # 信号队列
@@ -177,6 +190,11 @@ class SerialCryptoEngine:
             if self.position and self.position.symbol == symbol:
                 continue
 
+            # 信号冷却：同一币种 N bar 内不重复发信号
+            last_bar = self._last_signal_bar.get(symbol, -999)
+            if self._bar_idx - last_bar < self.cfg.signal_cooldown_bars:
+                continue
+
             # 获取 ATR 和价格
             atr_val = 0.0
             if symbol in atr_map and ts in atr_map[symbol].index:
@@ -200,6 +218,7 @@ class SerialCryptoEngine:
                 atr=atr_val,
                 entry_price=price,
             ))
+            self._last_signal_bar[symbol] = self._bar_idx
 
     def _try_open_from_queue(
         self,
@@ -240,7 +259,7 @@ class SerialCryptoEngine:
         sc = symbols_config.get(sig.symbol, {})
         is_btc = sc.get("is_btc", False)
         leverage = self.cfg.btc_leverage if is_btc else self.cfg.altcoin_leverage
-        capital = self.cfg.capital_per_trade
+        capital = self._current_tier_capital  # 动态每份资金
 
         # 仓位大小
         notional = capital * leverage
@@ -406,6 +425,47 @@ class SerialCryptoEngine:
         self._atr_at_entry = 0.0
         self._profit_tiers_taken = 0
 
+        # 平仓后检查升降级
+        self._check_tier_upgrade(exit_time)
+
+    def _check_tier_upgrade(self, ts: pd.Timestamp) -> None:
+        """检查总权益是否触发升降级，调整每份资金。
+
+        纪律 1.4：总资金翻倍 -> 重新三等分
+        纪律 1.5：总资金腰斩 -> 重新三等分
+        """
+        old_capital = self._current_tier_capital
+        old_tier_total = old_capital * 3.0
+        total = self.capital
+
+        # 找到当前总权益对应的标准档位
+        tiers = self.cfg.tier_bases
+        best_tier = min(tiers, key=lambda t: abs(t - total))
+        new_capital = best_tier / 3.0
+
+        # 只有跨过翻倍/腰斩阈值且新档位不同时才调整
+        if new_capital == old_capital:
+            return
+
+        if total >= old_tier_total * self.cfg.upgrade_threshold and new_capital > old_capital:
+            self._current_tier_capital = new_capital
+            self._tier_history.append({
+                "timestamp": str(ts),
+                "action": "upgrade",
+                "old_capital": old_capital,
+                "new_capital": new_capital,
+                "total_equity": round(total, 2),
+            })
+        elif total <= old_tier_total * self.cfg.downgrade_threshold and new_capital < old_capital:
+            self._current_tier_capital = new_capital
+            self._tier_history.append({
+                "timestamp": str(ts),
+                "action": "downgrade",
+                "old_capital": old_capital,
+                "new_capital": new_capital,
+                "total_equity": round(total, 2),
+            })
+
     def _position_margin(self) -> float:
         """当前持仓占用保证金。"""
         if self.position is None:
@@ -480,4 +540,6 @@ class SerialCryptoEngine:
             "flat_time_pct": round(flat_pct, 1),
             "exit_reasons": exit_reasons,
             "by_symbol": by_symbol,
+            "tier_changes": self._tier_history,
+            "final_capital_per_trade": round(self._current_tier_capital, 2),
         }
