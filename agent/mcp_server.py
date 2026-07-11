@@ -59,6 +59,7 @@ from src.market_data import (
     DEFAULT_MAX_ROWS,
     cap_rows,
     detect_source,
+    fetch_market_data_cached_json,
     fetch_market_data_json,
     get_loader,
 )
@@ -1042,6 +1043,7 @@ def get_market_data(
     source: str = "auto",
     interval: str = "1D",
     max_rows: int = DEFAULT_MAX_ROWS,
+    output_mode: str = "inline",
 ) -> str:
     """Fetch OHLCV market data for stocks, crypto, or mixed symbols.
 
@@ -1066,7 +1068,22 @@ def get_market_data(
             even-stride downsample (every step-th bar, last bar pinned)
             plus truncation metadata. Set max_rows=0 for all rows
             (unbounded, legacy behavior).
+        output_mode: "inline" (default) returns OHLCV data inline (may truncate
+            for large datasets). "file_cache" writes full data to a CSV cache
+            file and returns a summary with file path, row count, date range,
+            and 3-row preview. Use "file_cache" for large datasets to avoid
+            truncation, then use compute_indicators tool for analysis.
     """
+    if output_mode == "file_cache":
+        return fetch_market_data_cached_json(
+            codes=codes,
+            start_date=start_date,
+            end_date=end_date,
+            source=source,
+            interval=interval,
+            max_rows=max_rows,
+            loader_resolver=_get_loader,
+        )
     return fetch_market_data_json(
         codes=codes,
         start_date=start_date,

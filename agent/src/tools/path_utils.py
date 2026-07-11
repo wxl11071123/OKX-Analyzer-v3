@@ -91,6 +91,7 @@ def _default_file_roots() -> list[Path]:
         cwd / "data",
         home / ".vibe-trading" / "uploads",
         home / ".vibe-trading" / "imports",
+        home / ".vibe-trading" / "kline_cache",
     ]
 
 
@@ -140,6 +141,7 @@ def allowed_write_roots() -> list[Path]:
         cwd / "uploads",
         home / ".vibe-trading" / "uploads",
         home / ".vibe-trading" / "runs",
+        home / ".vibe-trading" / "kline_cache",
     ]
 
     roots: list[Path] = []

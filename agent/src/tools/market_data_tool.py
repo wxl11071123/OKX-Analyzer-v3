@@ -16,7 +16,11 @@ class MarketDataTool(BaseTool):
     description = (
         "Fetch normalized OHLCV market data through the repository loader layer. "
         "Use this for stock, ETF, index, or crypto price bars before writing raw "
-        "yfinance/OKX/Tushare scripts."
+        "yfinance/OKX/Tushare scripts. "
+        "Default output_mode='inline' returns data inline but truncates to 250 rows "
+        "(sampled) when exceeded. Use output_mode='file_cache' to write the full "
+        "dataset to a CSV file and get a summary (file path + preview) instead - "
+        "then use compute_indicators tool for technical analysis on the cached file."
     )
     parameters = {
         "type": "object",
@@ -74,11 +78,33 @@ class MarketDataTool(BaseTool):
                 "description": "Per-symbol row cap. Use 0 only when the full series is required.",
                 "default": DEFAULT_MAX_ROWS,
             },
+            "output_mode": {
+                "type": "string",
+                "enum": ["inline", "file_cache"],
+                "description": (
+                    "Output mode. 'inline' (default): returns OHLCV data inline (may truncate for large datasets). "
+                    "'file_cache': writes full data to a CSV cache file and returns a summary with file path, "
+                    "row count, date range, and 3-row preview (head+tail). Use 'file_cache' for large datasets "
+                    "to avoid truncation, then use compute_indicators tool for analysis."
+                ),
+                "default": "inline",
+            },
         },
         "required": ["codes", "start_date", "end_date"],
     }
 
     def execute(self, **kwargs: Any) -> str:
+        output_mode = kwargs.get("output_mode", "inline")
+        if output_mode == "file_cache":
+            from src.market_data import fetch_market_data_cached_json
+            return fetch_market_data_cached_json(
+                codes=kwargs["codes"],
+                start_date=kwargs["start_date"],
+                end_date=kwargs["end_date"],
+                source=kwargs.get("source", "auto"),
+                interval=kwargs.get("interval", "1D"),
+                max_rows=kwargs.get("max_rows", 0),
+            )
         return fetch_market_data_json(
             codes=kwargs["codes"],
             start_date=kwargs["start_date"],

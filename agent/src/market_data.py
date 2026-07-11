@@ -8,6 +8,7 @@ import math
 import os
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -154,3 +155,124 @@ def fetch_market_data(
 def fetch_market_data_json(**kwargs: Any) -> str:
     """Fetch market data and return strict JSON."""
     return json.dumps(fetch_market_data(**kwargs), ensure_ascii=False, indent=2, allow_nan=False)
+
+
+def _kline_cache_dir() -> Path:
+    """返回 K线缓存目录，不存在则创建。"""
+    d = Path.home() / ".vibe-trading" / "kline_cache"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _safe_filename(symbol: str, interval: str) -> str:
+    """生成安全的缓存文件名，将 symbol 中的 ``/`` 转义为 ``-``。"""
+    safe_sym = symbol.replace("/", "-")
+    return f"{safe_sym}_{interval}.csv"
+
+
+def fetch_market_data_cached(
+    *,
+    codes: list[str],
+    start_date: str,
+    end_date: str,
+    source: str = "auto",
+    interval: str = "1D",
+    max_rows: int = 0,
+    loader_resolver: Callable[[str], type] = get_loader,
+) -> dict[str, Any]:
+    """拉取 OHLCV 数据，全量写入 CSV 缓存文件，返回摘要。
+
+    与 :func:`fetch_market_data` 相同的拉取逻辑，但不做 ``cap_rows`` 截断，
+    而是将全量数据写入 CSV 文件，返回包含文件路径和预览的摘要。
+
+    Args:
+        codes: 标的代码列表。
+        start_date: 开始日期 (YYYY-MM-DD)。
+        end_date: 结束日期 (YYYY-MM-DD)。
+        source: 数据源。
+        interval: K线周期。
+        max_rows: 在 cached 模式下默认 0（全量写文件，不截断）。
+        loader_resolver: loader 解析函数。
+
+    Returns:
+        每个 symbol 对应一个 summary dict，包含 status/rows/interval/date_range/
+        file/preview_head/preview_tail/hint。
+    """
+    results: dict[str, Any] = {}
+
+    if source == "auto":
+        groups: dict[str, list[str]] = {}
+        for code in codes:
+            src = detect_source(code)
+            groups.setdefault(src, []).append(code)
+    else:
+        groups = {source: list(codes)}
+
+    cache_dir = _kline_cache_dir()
+
+    for src, src_codes in groups.items():
+        loader_cls = loader_resolver(src)
+        loader = loader_cls()
+        try:
+            data_map = loader.fetch(src_codes, start_date, end_date, interval=interval)
+        except Exception:
+            logger.exception(
+                "market-data loader %r failed for %s; codes fall through to _unresolved",
+                src,
+                src_codes,
+            )
+            data_map = {}
+        for symbol, df in data_map.items():
+            records = df.reset_index().to_dict(orient="records")
+            for row in records:
+                for key, value in row.items():
+                    row[key] = _json_safe(value)
+
+            # 写 CSV 缓存文件
+            filename = _safe_filename(symbol, interval)
+            csv_path = cache_dir / filename
+            try:
+                df.to_csv(csv_path, index=False, encoding="utf-8")
+            except Exception:
+                logger.exception("Failed to write kline cache file %s", csv_path)
+                # 降级到 cap_rows 截断返回
+                results[symbol] = cap_rows(records, DEFAULT_MAX_ROWS)
+                if isinstance(results[symbol], dict):
+                    results[symbol]["fallback"] = "inline_truncated"
+                continue
+
+            # 构建摘要
+            n = len(records)
+            preview_head = records[:3] if n >= 3 else records
+            preview_tail = records[-3:] if n >= 3 else records
+
+            # 提取日期范围
+            date_keys = [k for k in records[0].keys() if "date" in k.lower() or "ts" in k.lower()] if records else []
+            date_range = {"start": None, "end": None}
+            if date_keys:
+                dk = date_keys[0]
+                if records:
+                    date_range["start"] = str(records[0].get(dk, ""))
+                    date_range["end"] = str(records[-1].get(dk, ""))
+
+            results[symbol] = {
+                "status": "ok",
+                "rows": n,
+                "interval": interval,
+                "date_range": date_range,
+                "file": str(csv_path),
+                "preview_head": preview_head,
+                "preview_tail": preview_tail,
+                "hint": "Full data saved to file. Use compute_indicators tool or read_file for analysis.",
+            }
+
+    unresolved = [code for code in codes if code not in results]
+    if unresolved:
+        results["_unresolved"] = unresolved
+
+    return results
+
+
+def fetch_market_data_cached_json(**kwargs: Any) -> str:
+    """拉取市场数据并写入文件缓存，返回 strict JSON 摘要。"""
+    return json.dumps(fetch_market_data_cached(**kwargs), ensure_ascii=False, indent=2, allow_nan=False)

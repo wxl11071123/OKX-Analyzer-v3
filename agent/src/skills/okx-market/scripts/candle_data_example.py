@@ -6,10 +6,36 @@ from typing import Optional
 
 import requests
 import pandas as pd
-from datetime import datetime
 
 import os
+from pathlib import Path
+
 BASE_URL = os.getenv("OKX_RELAY", "https://www.okx.com") + "/api/v5"
+
+
+def _kline_cache_dir() -> Path:
+    """返回 K线缓存目录，不存在则创建。"""
+    d = Path.home() / ".vibe-trading" / "kline_cache"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _save_to_cache(df: pd.DataFrame, inst_id: str, bar: str) -> str:
+    """将 K线数据保存到缓存文件，返回文件路径。
+
+    Args:
+        df: K线 DataFrame。
+        inst_id: 交易产品ID，用于文件命名。
+        bar: K线周期，用于文件命名。
+
+    Returns:
+        保存的 CSV 文件绝对路径。
+    """
+    safe_sym = inst_id.replace("/", "-")
+    filename = f"{safe_sym}_{bar}.csv"
+    path = _kline_cache_dir() / filename
+    df.to_csv(path, index=False, encoding="utf-8")
+    return str(path)
 
 CANDLE_COLUMNS = ["ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"]
 INDEX_CANDLE_COLUMNS = ["ts", "open", "high", "low", "close", "confirm"]
@@ -40,6 +66,7 @@ def get_candles(inst_id: str, bar: str = "1D", limit: int = 100) -> Optional[pd.
         for col in ["open", "high", "low", "close", "vol"]:
             df[col] = df[col].astype(float)
         df = df.sort_values("ts").reset_index(drop=True)
+        _save_to_cache(df, inst_id, bar)
         return df
     except Exception as e:
         print(f"获取K线失败: {e}")
@@ -71,6 +98,7 @@ def get_index_candles(inst_id: str, bar: str = "1D", limit: int = 100) -> Option
         for col in ["open", "high", "low", "close"]:
             df[col] = df[col].astype(float)
         df = df.sort_values("ts").reset_index(drop=True)
+        _save_to_cache(df, inst_id, bar)
         return df
     except Exception as e:
         print(f"获取指数K线失败: {e}")

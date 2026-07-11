@@ -26,6 +26,7 @@ services:
       - vibe-home:/home/vibe/.vibe-trading
       - vibe-swarm-runs:/app/agent/.swarm/runs
       - vibe-uploads:/app/agent/uploads
+      - vibe-kline-cache:/home/vibe/.vibe-trading/kline_cache
     restart: unless-stopped
 
   frontend:
@@ -50,3 +51,4 @@ volumes:
   vibe-home:
   vibe-swarm-runs:
   vibe-uploads:
+  vibe-kline-cache:

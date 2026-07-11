@@ -6,117 +6,9 @@
 
 from typing import Dict
 
-import numpy as np
 import pandas as pd
 
-
-def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """计算 RSI（Wilder EWM 平滑）。
-
-    Args:
-        close: 收盘价序列。
-        period: RSI 周期。
-
-    Returns:
-        RSI 值序列，范围 0-100。
-    """
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - 100 / (1 + rs)
-
-
-def compute_adx(
-    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
-) -> pd.DataFrame:
-    """计算 ADX 及 +DI/-DI（Wilder EWM 平滑全链路）。
-
-    链路：+DM/-DM → TR → Wilder 平滑 → +DI/-DI → DX → ADX。
-
-    Args:
-        high: 最高价序列。
-        low: 最低价序列。
-        close: 收盘价序列。
-        period: ADX 周期。
-
-    Returns:
-        包含 plus_di、minus_di、adx 列的 DataFrame。
-    """
-    prev_high = high.shift(1)
-    prev_low = low.shift(1)
-    prev_close = close.shift(1)
-
-    # +DM / -DM
-    up_move = high - prev_high
-    down_move = prev_low - low
-
-    plus_dm = pd.Series(0.0, index=high.index)
-    minus_dm = pd.Series(0.0, index=high.index)
-    plus_dm[(up_move > down_move) & (up_move > 0)] = up_move
-    minus_dm[(down_move > up_move) & (down_move > 0)] = down_move
-
-    # True Range
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    # Wilder 平滑
-    alpha = 1 / period
-    smoothed_tr = tr.ewm(alpha=alpha, min_periods=period).mean()
-    smoothed_plus_dm = plus_dm.ewm(alpha=alpha, min_periods=period).mean()
-    smoothed_minus_dm = minus_dm.ewm(alpha=alpha, min_periods=period).mean()
-
-    # +DI / -DI
-    plus_di = 100 * smoothed_plus_dm / smoothed_tr
-    minus_di = 100 * smoothed_minus_dm / smoothed_tr
-
-    # DX → ADX
-    di_sum = plus_di + minus_di
-    di_sum = di_sum.replace(0, np.nan)
-    dx = 100 * (plus_di - minus_di).abs() / di_sum
-    adx = dx.ewm(alpha=alpha, min_periods=period).mean()
-
-    return pd.DataFrame({"plus_di": plus_di, "minus_di": minus_di, "adx": adx})
-
-
-def compute_bollinger(
-    close: pd.Series, window: int = 20, num_std: float = 2.0
-) -> pd.DataFrame:
-    """计算布林带。
-
-    Args:
-        close: 收盘价序列。
-        window: 移动平均窗口。
-        num_std: 标准差倍数。
-
-    Returns:
-        包含 bb_mid、bb_upper、bb_lower 列的 DataFrame。
-    """
-    mid = close.rolling(window).mean()
-    std = close.rolling(window).std()
-    return pd.DataFrame({
-        "bb_mid": mid,
-        "bb_upper": mid + num_std * std,
-        "bb_lower": mid - num_std * std,
-    })
-
-
-def compute_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
-    """计算 OBV（能量潮指标）。
-
-    Args:
-        close: 收盘价序列。
-        volume: 成交量序列。
-
-    Returns:
-        OBV 序列。
-    """
-    sign = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
-    return (volume * sign).cumsum()
+from src.indicators.ta import compute_adx, compute_bollinger, compute_obv, compute_rsi
 
 
 class SignalEngine:
@@ -257,7 +149,8 @@ def _fetch_okx(inst_id: str, bar: str = "1D", limit: int = 300) -> pd.DataFrame:
     Returns:
         OHLCV DataFrame，index 为 datetime。
     """
-    import os, requests
+    import os
+    import requests
     base = os.getenv("OKX_RELAY", "https://www.okx.com")
     resp = requests.get(
         f"{base.rstrip('/')}/api/v5/market/candles",
