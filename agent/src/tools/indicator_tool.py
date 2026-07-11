@@ -11,6 +11,7 @@ import pandas as pd
 from src.agent.tools import BaseTool
 from src.indicators.ta import (
     compute_adx,
+    compute_atr,
     compute_bollinger,
     compute_ema,
     compute_macd,
@@ -18,7 +19,7 @@ from src.indicators.ta import (
     compute_rsi,
 )
 
-_SUPPORTED_INDICATORS = {"ema", "rsi", "macd", "adx", "bollinger", "obv"}
+_SUPPORTED_INDICATORS = {"ema", "rsi", "macd", "adx", "bollinger", "obv", "atr"}
 
 
 def _json_safe(value: Any) -> Any:
@@ -246,6 +247,23 @@ class IndicatorTool(BaseTool):
                 latest_result["obv"] = {
                     "value": _json_safe(obv_series.iloc[-1]),
                     "trend": _trend_direction(obv_series),
+                }
+
+            elif ind == "atr":
+                required = {"high", "low"}
+                missing = required - set(df.columns)
+                if missing:
+                    return json.dumps({
+                        "status": "error",
+                        "error": f"Missing required column(s) for ATR: {', '.join(sorted(missing))}",
+                    }, ensure_ascii=False)
+                p = params.get("atr", {})
+                period = p.get("period", 14)
+                atr_series = compute_atr(df["high"], df["low"], close, period=period)
+                latest_atr = _json_safe(atr_series.iloc[-1])
+                latest_result[f"atr_{period}"] = {
+                    "value": latest_atr,
+                    "pct_of_price": round(latest_atr / latest_close * 100, 2) if latest_atr and latest_close else None,
                 }
 
         # 最近3行预览

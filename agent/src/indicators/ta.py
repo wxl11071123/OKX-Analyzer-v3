@@ -160,3 +160,28 @@ def compute_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     """
     sign = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
     return (volume * sign).cumsum()
+
+
+def compute_atr(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+) -> pd.Series:
+    """计算 ATR（平均真实波幅）。
+
+    True Range = max(high-low, |high-prev_close|, |low-prev_close|)
+    ATR = Wilder EWM 平滑的 TR。
+
+    Args:
+        high: 最高价序列。
+        low: 最低价序列。
+        close: 收盘价序列。
+        period: ATR 周期。
+
+    Returns:
+        ATR 值序列。
+    """
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, min_periods=period).mean()
