@@ -1095,6 +1095,29 @@ def get_market_data(
     )
 
 
+@mcp.tool
+def get_funding_rate(instId: str, history: bool = False) -> str:
+    """Query OKX perpetual swap funding rate (current or historical).
+
+    Returns the current funding rate, annualized rate, next funding time,
+    and a crowding signal. Use this to gauge market positioning:
+    - Very positive rate (>0.1%/8h): longs crowded, reversal risk
+    - Very negative rate (<-0.05%/8h): shorts crowded, squeeze risk
+
+    Args:
+        instId: Perpetual swap instrument ID, e.g. "BTC-USDT-SWAP".
+        history: If True, return recent 30 historical funding rates.
+            Default False returns only the current period.
+
+    Returns:
+        JSON with funding rate, annualized %, and crowding signal.
+    """
+    from src.tools.funding_rate_tool import FundingRateTool
+
+    tool = FundingRateTool()
+    return tool.execute(instId=instId, history=history)
+
+
 # ---------------------------------------------------------------------------
 # Read-only fundamentals, flow, news & discovery tools
 #
