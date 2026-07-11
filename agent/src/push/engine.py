@@ -18,7 +18,6 @@ import httpx
 
 from src.push.config import load_config
 from src.push.feishu_sender import send_feishu_text, _get_feishu_creds
-from src.push.translator import translate_articles
 from src.news import rss_collector
 
 logger = logging.getLogger(__name__)
@@ -73,10 +72,10 @@ class PushEngine:
         today_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H:%M")
 
-        # 0. 自动同步交易日志（每 5 分钟一次兜底）
+        # 0. 自动同步交易日志（每 5 分钟一次兜底，独立线程不阻塞）
         if self._running and time.time() - self._last_trade_sync > 300:
             self._last_trade_sync = time.time()
-            self._sync_trade_logs()
+            threading.Thread(target=self._sync_trade_logs, daemon=True).start()
 
         # 1. 价格预警
         if config.get("price_alerts", {}).get("enabled"):
@@ -88,13 +87,13 @@ class PushEngine:
                 self._last_hourly = time.time()
                 self._send_hourly_summary(config)
 
-        # 3. 新闻推送 (每天指定时间)
+        # 3. 新闻推送 (每天指定时间，独立线程不阻塞主循环)
         if config.get("news_push", {}).get("enabled"):
             for push_time in config["news_push"].get("times", ["08:00", "20:00"]):
                 key = f"{today_str}_{push_time}"
                 if time_str == push_time and not self._last_news_sent.get(key):
                     self._last_news_sent[key] = True
-                    self._send_news_digest(config)
+                    threading.Thread(target=self._send_news_digest, args=(config,), daemon=True).start()
 
             # 清理昨天的记录
             for k in list(self._last_news_sent.keys()):
@@ -160,14 +159,11 @@ class PushEngine:
             if not articles:
                 return
 
-            # 翻译
-            articles = translate_articles(articles)
-
             now = datetime.now(TZ_BEIJING)
-            lines = [f"**📰 加密货币新闻速递** ({now.strftime('%H:%M')})\n"]
+            lines = [f"**📰 Crypto News Digest** ({now.strftime('%H:%M')})\n"]
 
             for i, a in enumerate(articles[:8]):
-                title = a.get("title_zh") or a.get("title", "")
+                title = a.get("title", "")
                 source = a.get("source", "")
                 lines.append(f"{i+1}. [{source}] {title[:80]}")
 
