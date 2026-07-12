@@ -724,6 +724,11 @@ class FeishuChannel(BaseChannel):
             "register_p2_im_chat_member_bot_deleted_v1",
             lambda _: None,
         )
+        builder = self._register_optional_event(
+            builder,
+            "register_card_action_trigger_v1",
+            self._on_card_action_trigger,
+        )
         event_handler = builder.build()
 
         # Create WebSocket client for long connection
@@ -2297,6 +2302,115 @@ class FeishuChannel(BaseChannel):
         """Ignore p2p-enter events when a user opens a bot chat."""
         self.logger.debug("Bot entered p2p chat (user opened chat window)")
         pass
+
+    def _on_card_action_trigger(self, data: Any) -> None:
+        """Handle card action button click event (sync, called from WebSocket thread)."""
+        if self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._on_card_action_async(data), self._loop)
+
+    async def _on_card_action_async(self, data: Any) -> None:
+        """Handle card action button click event (async)."""
+        try:
+            action = data.event.action
+            action_value_raw = action.value or "{}"
+            try:
+                action_value = json.loads(action_value_raw)
+            except (json.JSONDecodeError, TypeError):
+                action_value = action_value_raw
+
+            chat_id = data.event.context.get("chat_id", "")
+            open_id = data.event.operator.get("open_id", "")
+            self.logger.info("card action: value=%s open_id=%s chat_id=%s", action_value, open_id, chat_id)
+
+            action_key = action_value if isinstance(action_value, str) else action_value.get("action", "")
+            if action_key == "halt_trading":
+                await self._handle_halt_button(chat_id, open_id)
+            elif action_key == "confirm_halt":
+                await self._handle_confirm_halt(chat_id, open_id)
+            elif action_key == "cancel_halt":
+                await self._handle_cancel_halt(chat_id, open_id)
+            elif action_key == "view_positions":
+                await self._handle_view_positions(chat_id, open_id)
+        except Exception:
+            self.logger.exception("Error handling card action")
+
+    async def _handle_halt_button(self, chat_id: str, open_id: str) -> None:
+        """用户点击「停止交易」→ 推送二次确认卡片。"""
+        loop = asyncio.get_running_loop()
+        confirm_card = json.dumps({
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "确认停止交易"}, "template": "red"},
+            "elements": [
+                {"tag": "markdown", "content": "**确认停止所有交易？**\n\n所有未平仓仓位将被立即平仓，新的交易信号将被忽略，直到手动恢复。"},
+                {"tag": "action", "actions": [
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "确认停止"}, "type": "danger", "value": json.dumps({"action": "confirm_halt"})},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "取消"}, "type": "default", "value": json.dumps({"action": "cancel_halt"})},
+                ]},
+            ],
+        }, ensure_ascii=False)
+        await loop.run_in_executor(
+            None, self._send_message_sync, "open_id", open_id, "interactive", confirm_card
+        )
+
+    async def _handle_confirm_halt(self, chat_id: str, open_id: str) -> None:
+        """用户确认停止 → 写入 halt.flag 并推送确认消息。"""
+        from src.live.halt import trip_halt
+
+        trip_halt(by="feishu", reason="用户通过飞书按钮确认停止")
+        loop = asyncio.get_running_loop()
+        text = json.dumps({"text": "交易已停止，所有仓位将被平仓。发送「恢复交易」可重新启用。"}, ensure_ascii=False)
+        await loop.run_in_executor(
+            None, self._send_message_sync, "open_id", open_id, "text", text
+        )
+        self.logger.info("halt tripped via feishu button by %s", open_id)
+
+    async def _handle_cancel_halt(self, chat_id: str, open_id: str) -> None:
+        """用户取消停止 → 推送取消确认。"""
+        loop = asyncio.get_running_loop()
+        text = json.dumps({"text": "已取消停止操作，交易继续运行。"}, ensure_ascii=False)
+        await loop.run_in_executor(
+            None, self._send_message_sync, "open_id", open_id, "text", text
+        )
+
+    async def _handle_view_positions(self, chat_id: str, open_id: str) -> None:
+        """用户点击「查看持仓」→ 推送持仓摘要。"""
+        try:
+            from src.push.report_generator import _get_portfolio_summary
+
+            portfolio = _get_portfolio_summary()
+            equity = portfolio.get("equity", 0)
+            positions = portfolio.get("positions", [])
+
+            if positions:
+                lines = [f"**当前权益: {equity:.1f}U**\n"]
+                for p in positions:
+                    side = "📈 做多" if p.get("side") == "long" else "📉 做空"
+                    lines.append(
+                        f"- {side} {p['symbol']} "
+                        f"entry={p.get('avg_price', 0)} mark={p.get('mark_price', 0)} "
+                        f"PnL={p.get('unrealized_pnl', 0):+.2f}U ({p.get('pnl_pct', '0%')})"
+                    )
+                content = "\n".join(lines)
+            else:
+                content = f"**当前权益: {equity:.1f}U**\n\n暂无持仓。"
+
+            card = json.dumps({
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "当前持仓"}, "template": "blue"},
+                "elements": [
+                    {"tag": "markdown", "content": content},
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "停止交易"}, "type": "danger", "value": json.dumps({"action": "halt_trading"})},
+                    ]},
+                ],
+            }, ensure_ascii=False)
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, self._send_message_sync, "open_id", open_id, "interactive", card
+            )
+        except Exception:
+            self.logger.exception("Error handling view_positions")
 
     @staticmethod
     def _format_tool_hint_lines(tool_hint: str) -> str:

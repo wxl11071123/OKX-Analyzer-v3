@@ -1,17 +1,18 @@
 """串行加密合约回测引擎。
 
 一次只持有一个仓位。信号队列按币种优先级排序（BTC > ETH > 山寨）。
-支持：ATR 止损、阶梯锁利、EMA 交叉退出、时间退出、资金费率、强平检查。
+支持：策略接口化退出逻辑、资金费率、强平检查。
 
-与 BaseEngine 的区别：
-- 不是每 bar rebalance 所有币种，而是逐 bar 检查信号队列
-- 当前持仓未平仓时，新信号排队等待
-- 平仓后从队列中取最高优先级的信号开仓
+与旧版的区别：
+- 退出逻辑（止损/止盈/时间退出/信号退出）抽象为 ExitStrategy 协议
+- 每个策略引擎实现自己的退出逻辑，引擎只负责调用
+- 仓位管理支持 1/4 凯利动态计算
 """
 
 from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -29,24 +30,83 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ExitDecision:
+    """退出决策。"""
+    should_exit: bool
+    exit_price: float = 0.0
+    reason: str = ""
+    new_stop_price: Optional[float] = None  # 移动止损时更新
+
+
+class ExitStrategy(ABC):
+    """退出策略接口。每个策略引擎实现自己的退出逻辑。"""
+
+    @abstractmethod
+    def on_open(
+        self,
+        pos: Position,
+        entry_bar: pd.Series,
+        atr: float,
+        config: "SerialConfig",
+    ) -> float:
+        """开仓时调用，返回初始止损价。
+
+        Args:
+            pos: 刚创建的持仓。
+            entry_bar: 入场K线数据。
+            atr: 入场时的ATR值。
+            config: 引擎配置。
+
+        Returns:
+            初始止损价。
+        """
+        ...
+
+    @abstractmethod
+    def on_bar(
+        self,
+        pos: Position,
+        bar: pd.Series,
+        ts: pd.Timestamp,
+        bar_idx: int,
+        entry_bar_idx: int,
+        stop_price: float,
+        atr_at_entry: float,
+        data_map: Dict[str, pd.DataFrame],
+        signal_map: Dict[str, pd.Series],
+        config: "SerialConfig",
+    ) -> ExitDecision:
+        """每个bar检查是否退出。
+
+        Args:
+            pos: 当前持仓。
+            bar: 当前K线数据。
+            ts: 当前时间戳。
+            bar_idx: 当前bar索引。
+            entry_bar_idx: 入场bar索引。
+            stop_price: 当前止损价。
+            atr_at_entry: 入场时ATR。
+            data_map: 所有币种数据。
+            signal_map: 所有币种信号。
+            config: 引擎配置。
+
+        Returns:
+            退出决策。
+        """
+        ...
+
+
+@dataclass
 class SerialConfig:
     """串行引擎配置。"""
     initial_capital: float = 150.0
     capital_per_trade: float = 50.0          # 每份资金（动态升降级，初始值）
-    btc_leverage: float = 10.0
-    altcoin_leverage: float = 5.0
+    btc_leverage: float = 5.0
+    altcoin_leverage: float = 3.0
     maker_rate: float = 0.0002
     taker_rate: float = 0.0005
     slippage_rate: float = 0.0005
     funding_rate: float = 0.0001
-    # 止损：N × ATR，上限 capital_per_trade × max_loss_pct
-    atr_stop_multiplier: float = 1.5
-    max_loss_pct: float = 0.15                # 资金亏损上限 15%
-    # 阶梯锁利：每 N × ATR 锁一次
-    atr_profit_multiplier: float = 3.0
-    # 时间退出（bar 数）
-    btc_max_holding_bars: int = 90            # 15 天 × 6 bar/天 (4H)
-    alt_max_holding_bars: int = 24            # 24 小时 (1H)
     # 信号冷却：同一币种 N bar 内不重复发信号
     signal_cooldown_bars: int = 6
     # 币种优先级：数字越小优先级越高
@@ -57,6 +117,11 @@ class SerialConfig:
     upgrade_threshold: float = 2.0            # 总资金翻倍 -> 每份资金翻倍
     downgrade_threshold: float = 0.5          # 总资金腰斩 -> 每份资金减半
     tier_bases: tuple = (75.0, 150.0, 300.0, 600.0, 1200.0)  # 标准档位
+    # 1/4 凯利仓位管理（如果启用，覆盖固定 capital_per_trade）
+    use_kelly: bool = False
+    kelly_fraction: float = 0.25              # 1/4 凯利
+    kelly_win_rate: float = 0.0               # 回测统计的胜率
+    kelly_payoff_ratio: float = 0.0           # 回测统计的盈亏比 W/L
 
 
 @dataclass
@@ -74,10 +139,12 @@ class SerialCryptoEngine:
 
     核心约束：同一时间最多持有一个仓位。
     信号按币种优先级排队，平仓后自动取队首信号开仓。
+    退出逻辑委托给 ExitStrategy 策略接口。
     """
 
-    def __init__(self, config: SerialConfig):
+    def __init__(self, config: SerialConfig, exit_strategy: Optional[ExitStrategy] = None):
         self.cfg = config
+        self.exit_strategy = exit_strategy
         self.capital: float = config.initial_capital
         self.position: Optional[Position] = None
         self.trades: List[TradeRecord] = []
@@ -88,7 +155,6 @@ class SerialCryptoEngine:
         # 持仓附加状态
         self._stop_price: float = 0.0
         self._atr_at_entry: float = 0.0
-        self._profit_tiers_taken: int = 0
         self._entry_bar_idx: int = 0
         self._bar_idx: int = 0
 
@@ -98,7 +164,6 @@ class SerialCryptoEngine:
         # 动态资金管理
         self._current_tier_capital: float = config.capital_per_trade  # 当前每份资金
         self._tier_history: list[dict] = []  # 升降级记录
-        self._max_holding_bars: int = 0
 
         # 信号队列
         self._signal_queue: deque[PendingSignal] = deque()
@@ -154,6 +219,11 @@ class SerialCryptoEngine:
                 equity=equity,
                 positions=1 if self.position else 0,
             ))
+
+            # 破产检查
+            if equity <= 0:
+                logger.warning("Equity <= 0 at %s, backtest terminated", ts)
+                break
 
         # 强制平仓
         if self.position is not None and len(dates) > 0:
@@ -259,7 +329,9 @@ class SerialCryptoEngine:
         sc = symbols_config.get(sig.symbol, {})
         is_btc = sc.get("is_btc", False)
         leverage = self.cfg.btc_leverage if is_btc else self.cfg.altcoin_leverage
-        capital = self._current_tier_capital  # 动态每份资金
+
+        # 仓位大小：1/4凯利或固定档位
+        capital = self._calc_position_capital()
 
         # 仓位大小
         notional = capital * leverage
@@ -268,11 +340,15 @@ class SerialCryptoEngine:
         # 手续费
         comm = size * slipped * self.cfg.taker_rate
 
-        # 检查资金
-        if capital + comm > self.capital:
+        # 保证金（开仓时锁定）
+        margin = capital  # margin = notional / leverage = capital * leverage / leverage
+
+        # 检查资金：保证金 + 手续费 必须小于可用资金
+        if margin + comm > self.capital:
             return
 
-        self.capital -= comm
+        # 扣除保证金和手续费
+        self.capital -= margin + comm
 
         self.position = Position(
             symbol=sig.symbol,
@@ -285,19 +361,16 @@ class SerialCryptoEngine:
             entry_commission=comm,
         )
 
-        # 设置止损
+        # 设置止损：优先用策略接口，否则用默认ATR止损
         self._atr_at_entry = sig.atr
-        stop_distance = sig.atr * self.cfg.atr_stop_multiplier
-        # 资金止损上限：每币亏损不超过 max_loss_amount
-        # max_loss_amount / size = 每币最大亏损（价格单位）
-        max_loss_amount = capital * self.cfg.max_loss_pct
-        max_loss_distance = max_loss_amount / size if size > 0 else stop_distance
-        # 取较小的止损距离（ATR 和资金上限哪个先到）
-        actual_stop_distance = min(stop_distance, max_loss_distance)
-        self._stop_price = slipped - sig.direction * actual_stop_distance
-        self._profit_tiers_taken = 0
+        if self.exit_strategy is not None:
+            self._stop_price = self.exit_strategy.on_open(
+                self.position, bar, sig.atr, self.cfg,
+            )
+        else:
+            stop_distance = sig.atr * 1.5
+            self._stop_price = slipped - sig.direction * stop_distance
         self._entry_bar_idx = bar_idx
-        self._max_holding_bars = self.cfg.btc_max_holding_bars if is_btc else self.cfg.alt_max_holding_bars
 
     def _check_position(
         self,
@@ -316,11 +389,30 @@ class SerialCryptoEngine:
             return
 
         bar = df.loc[ts]
+
+        # 优先用策略接口
+        if self.exit_strategy is not None:
+            decision = self.exit_strategy.on_bar(
+                pos, bar, ts, bar_idx, self._entry_bar_idx,
+                self._stop_price, self._atr_at_entry,
+                data_map, signal_map, self.cfg,
+            )
+            if decision.new_stop_price is not None:
+                self._stop_price = decision.new_stop_price
+            if decision.should_exit:
+                exit_price = decision.exit_price
+                if exit_price <= 0:
+                    close = float(bar.get("close", 0))
+                    exit_price = close
+                self._close_position(exit_price, ts, decision.reason)
+            return
+
+        # 默认退出逻辑：止损 + 信号反转 + 时间退出
         high = float(bar.get("high", bar.get("close", 0)))
         low = float(bar.get("low", bar.get("close", 0)))
         close = float(bar.get("close", 0))
 
-        # 1. 止损检查
+        # 止损
         if pos.direction == 1 and low <= self._stop_price:
             self._close_position(self._stop_price, ts, "stop_loss")
             return
@@ -328,41 +420,18 @@ class SerialCryptoEngine:
             self._close_position(self._stop_price, ts, "stop_loss")
             return
 
-        # 2. 阶梯锁利检查
-        profit_target = self._atr_at_entry * self.cfg.atr_profit_multiplier
-        next_tier_price = pos.entry_price + pos.direction * profit_target * (self._profit_tiers_taken + 1)
-        if pos.direction == 1 and high >= next_tier_price:
-            # 锁利：移动止损到上一级锁利位
-            self._profit_tiers_taken += 1
-            self._stop_price = pos.entry_price + pos.direction * profit_target * (self._profit_tiers_taken - 1)
-            if self._stop_price < pos.entry_price:
-                self._stop_price = pos.entry_price  # 至少保本
-        elif pos.direction == -1 and low <= next_tier_price:
-            self._profit_tiers_taken += 1
-            self._stop_price = pos.entry_price + pos.direction * profit_target * (self._profit_tiers_taken - 1)
-            if self._stop_price > pos.entry_price:
-                self._stop_price = pos.entry_price
-
-        # 3. EMA 交叉退出（趋势反转）
+        # 信号反转退出
         sig_series = signal_map.get(pos.symbol)
         if sig_series is not None and ts in sig_series.index:
             sig = sig_series.at[ts]
             if sig is not None and not pd.isna(sig):
                 sig_val = int(sig) if sig != 0 else 0
-                # 信号反转 -> 平仓
                 if sig_val != 0 and sig_val != pos.direction:
-                    self._close_position(close, ts, "ema_cross")
+                    self._close_position(close, ts, "signal_reverse")
                     return
-                # 信号消失（变 0）-> 平仓
                 if sig_val == 0:
                     self._close_position(close, ts, "signal_exit")
                     return
-
-        # 4. 时间退出
-        holding_bars = bar_idx - self._entry_bar_idx
-        if holding_bars >= self._max_holding_bars:
-            self._close_position(close, ts, "time_exit")
-            return
 
     def _apply_funding_and_liq(
         self,
@@ -423,10 +492,25 @@ class SerialCryptoEngine:
         self.position = None
         self._stop_price = 0.0
         self._atr_at_entry = 0.0
-        self._profit_tiers_taken = 0
 
         # 平仓后检查升降级
         self._check_tier_upgrade(exit_time)
+
+    def _calc_position_capital(self) -> float:
+        """计算本次交易的保证金（1/4凯利或固定档位）。"""
+        if self.cfg.use_kelly and self.cfg.kelly_win_rate > 0 and self.cfg.kelly_payoff_ratio > 0:
+            p = self.cfg.kelly_win_rate
+            b = self.cfg.kelly_payoff_ratio
+            f_kelly = p - (1 - p) / b
+            if f_kelly <= 0:
+                # 负期望，用最小仓位
+                return self._current_tier_capital * 0.5
+            f_actual = f_kelly * self.cfg.kelly_fraction
+            # 保证金 = equity × f_actual
+            margin = self.capital * f_actual
+            # 不超过当前档位
+            return min(margin, self._current_tier_capital)
+        return self._current_tier_capital
 
     def _check_tier_upgrade(self, ts: pd.Timestamp) -> None:
         """检查总权益是否触发升降级，调整每份资金。

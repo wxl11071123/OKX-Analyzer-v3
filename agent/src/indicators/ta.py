@@ -185,3 +185,68 @@ def compute_atr(
     tr3 = (low - prev_close).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return tr.ewm(alpha=1 / period, min_periods=period).mean()
+
+
+def compute_hurst(close: pd.Series, window: int = 200) -> pd.Series:
+    """计算滚动 Hurst 指数（R/S 分析法）。
+
+    H > 0.5：持续性序列（趋势态）
+    H = 0.5：随机游走
+    H < 0.5：反持续性序列（均值回归态）
+
+    Args:
+        close: 收盘价序列。
+        window: 滚动窗口大小，建议 >= 200 以保证估计稳定性。
+
+    Returns:
+        Hurst 指数序列。
+    """
+    hurst_values = pd.Series(np.nan, index=close.index)
+
+    close_arr = close.values
+
+    for i in range(window - 1, len(close_arr)):
+        segment = close_arr[i - window + 1: i + 1]
+        segment = segment[~np.isnan(segment)]
+        if len(segment) < window:
+            continue
+
+        returns = np.diff(np.log(segment))
+        if len(returns) < 20:
+            continue
+
+        n = len(returns)
+        rs_values = []
+        ns = []
+
+        for k in [2, 4, 5, 8, 10, 16, 20, 25, 32, 40, 50, 80, 100]:
+            if k > n // 2:
+                break
+            num_groups = n // k
+            if num_groups < 1:
+                continue
+            rs_list = []
+            for g in range(num_groups):
+                group = returns[g * k: (g + 1) * k]
+                if len(group) < 2:
+                    continue
+                mean_g = np.mean(group)
+                cumdev = np.cumsum(group - mean_g)
+                r = np.max(cumdev) - np.min(cumdev)
+                s = np.std(group, ddof=1)
+                if s > 0:
+                    rs_list.append(r / s)
+            if rs_list:
+                rs_values.append(np.mean(rs_list))
+                ns.append(k)
+
+        if len(ns) < 4:
+            continue
+
+        log_ns = np.log(ns)
+        log_rs = np.log(rs_values)
+
+        slope, _ = np.polyfit(log_ns, log_rs, 1)
+        hurst_values.iloc[i] = slope
+
+    return hurst_values

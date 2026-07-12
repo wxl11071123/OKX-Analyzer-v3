@@ -153,3 +153,59 @@ def send_feishu_card(title: str, content: str, url: str = "") -> bool:
     except Exception as e:
         logger.error(f"飞书卡片发送失败: {e}")
         return False
+
+
+def send_feishu_card_with_buttons(title: str, content: str, buttons: list[dict]) -> bool:
+    """通过飞书 Bot API 发送带交互按钮的卡片消息。
+
+    Args:
+        title: 卡片标题
+        content: 卡片正文（Markdown 格式）
+        buttons: 按钮列表，每项格式:
+            {"text": "按钮文字", "type": "primary"|"danger"|"default", "value": "action_key"}
+
+    Returns:
+        是否发送成功。
+    """
+    receive_id, receive_type = _get_receive_id_and_type()
+    app_id, _, _, _ = _get_feishu_creds()
+    if not app_id or not receive_id:
+        return False
+
+    token = _get_tenant_token()
+    if not token:
+        return False
+
+    try:
+        actions = []
+        for btn in buttons:
+            btn_type = btn.get("type", "default")
+            # 飞书卡片按钮类型映射
+            feishu_type = btn_type if btn_type in ("primary", "danger", "default") else "default"
+            actions.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": btn.get("text", "")},
+                "type": feishu_type,
+                "value": json.dumps(btn.get("value", "")),
+            })
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": title}, "template": "blue"},
+            "elements": [
+                {"tag": "markdown", "content": content},
+                {"tag": "action", "actions": actions},
+            ],
+        }
+        card_content = json.dumps(card, ensure_ascii=False)
+
+        resp = httpx.post(
+            f"{FEISHU_API}/im/v1/messages?receive_id_type={receive_type}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"receive_id": receive_id, "msg_type": "interactive", "content": card_content},
+            timeout=10,
+        )
+        return resp.json().get("code") == 0
+    except Exception as e:
+        logger.error(f"飞书交互按钮卡片发送失败: {e}")
+        return False

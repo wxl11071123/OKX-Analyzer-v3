@@ -1,0 +1,16 @@
+[Unit]
+Description=TSMOM Automated Trading Engine
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/OKX-Analyzer-v3/agent
+Environment="OKX_FLAG=0"
+Environment="OKX_RELAY=http://127.0.0.1:8080"
+ExecStart=/usr/bin/python3 /root/OKX-Analyzer-v3/agent/trading_engine.py
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

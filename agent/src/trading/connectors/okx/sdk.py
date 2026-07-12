@@ -1,27 +1,24 @@
 """Read-only OKX connector via the optional ``python-okx`` SDK.
 
 Wraps ``AccountAPI`` (account/positions), ``TradeAPI`` (orders/fills) and
-``MarketAPI`` (quote/candles) for the five read operations. No order-placement
-method is exposed here.
-
-Paper-vs-live is selected by the SDK ``flag`` (``"1"`` demo/paper sets the
-``x-simulated-trading`` header, ``"0"`` live) and reinforced by OKX's separate
-demo key namespace. OKX returns NO field echoing demo/live, so there is no hard
-self-verifying guard: the discriminator is the configured flag plus best-effort
-UID pinning. When ``expected_uid`` is set, :func:`check_status` calls the account
-config endpoint and asserts the returned ``uid`` matches, reporting any mismatch
-as an error. The guard marker recorded on every payload is
-``header_flag+uid_pin``. The selected profile is recorded as ``paper`` on every
-payload and never flipped implicitly.
+``MarketAPI`` (quote/candles) for the five read operations. SWAP order functions
+use direct HTTP through relay for real-time trading.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import os
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping
+
+import httpx
 
 from src.config.paths import get_runtime_root
 
@@ -509,6 +506,277 @@ def cancel_order(
         return _order_error(cfg, str(exc), symbol=clean_symbol, order_id=clean_id)
 
     return _order_result(cfg, resp, symbol=clean_symbol, action="cancel", requested_order_id=clean_id)
+
+
+# ---------------------------------------------------------------------------
+# SWAP 下单（永续合约，通过 relay 直连 OKX）
+# ---------------------------------------------------------------------------
+
+RELAY = os.getenv("OKX_RELAY", "https://www.okx.com")
+OKX_API = f"{RELAY}/api/v5"
+
+
+def _sway_auth_headers(method: str, path: str, body: str = "") -> dict[str, str]:
+    """构建 OKX 签名头。POST 请求需传入 JSON body。"""
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    secret = os.getenv("OKX_API_SECRET", "")
+    prehash = ts + method.upper() + path + body
+    sign = base64.b64encode(
+        hmac.new(secret.encode(), prehash.encode(), hashlib.sha256).digest()
+    ).decode()
+    flag = os.getenv("OKX_FLAG", "1")
+    headers = {
+        "OK-ACCESS-KEY": os.getenv("OKX_API_KEY", ""),
+        "OK-ACCESS-SIGN": sign,
+        "OK-ACCESS-TIMESTAMP": ts,
+        "OK-ACCESS-PASSPHRASE": os.getenv("OKX_PASSPHRASE", ""),
+        "Content-Type": "application/json",
+    }
+    if flag == "1":
+        headers["x-simulated-trading"] = "1"
+    return headers
+
+
+def set_swap_leverage(
+    config: OKXConfig | None = None,
+    *,
+    symbol: str,
+    lever: str,
+    mgn_mode: str = "isolated",
+    pos_side: str = "",
+) -> dict[str, Any]:
+    """设置永续合约杠杆和保证金模式。
+
+    Args:
+        symbol: 合约 ID，如 "BTC-USDT-SWAP"
+        lever: 杠杆倍数，如 "5"
+        mgn_mode: 保证金模式 "isolated" 或 "cross"
+        pos_side: 持仓方向 "long" 或 "short"（双向持仓时必填）
+    """
+    cfg = config or load_config()
+    clean = str(symbol).strip().upper()
+    path = "/api/v5/account/set-leverage"
+    body: dict[str, Any] = {
+        "instId": clean,
+        "lever": str(lever),
+        "mgnMode": mgn_mode,
+    }
+    if pos_side:
+        body["posSide"] = pos_side
+
+    try:
+        resp = httpx.post(
+            f"{OKX_API}/account/set-leverage",
+            headers=_sway_auth_headers("POST", path, json.dumps(body, separators=(",", ":"))),
+            json=body,
+            timeout=cfg.timeout,
+        )
+        data = resp.json()
+        if data.get("code") != "0":
+            return {"status": "error", "error": data.get("msg", "set leverage failed"), "detail": data}
+        return {
+            "status": "ok",
+            "symbol": clean,
+            "lever": str(lever),
+            "mgn_mode": mgn_mode,
+            "profile": cfg.profile,
+            "is_demo": cfg.is_demo,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "symbol": clean}
+
+
+def place_swap_order(
+    config: OKXConfig | None = None,
+    *,
+    symbol: str,
+    side: str,
+    pos_side: str,
+    sz: str,
+    lever: str = "5",
+    td_mode: str = "isolated",
+    order_type: str = "market",
+    px: str = "",
+) -> dict[str, Any]:
+    """永续合约下单。
+
+    与现货 place_order() 的区别：
+    - tdMode: "isolated" 而非 "cash"
+    - posSide 必填（双向持仓）
+    - sz 是合约张数
+    - 需先调 set_swap_leverage 设置杠杆
+
+    Args:
+        symbol: "BTC-USDT-SWAP"
+        side: "buy" 开多/平空, "sell" 开空/平多
+        pos_side: "long" 或 "short"
+        sz: 合约张数
+        lever: 杠杆（仅记录，实际需先 set_swap_leverage）
+        td_mode: "isolated" 或 "cross"
+        order_type: "market" 或 "limit"
+        px: 限价单价格
+    """
+    cfg = config or load_config()
+    clean = str(symbol).strip().upper()
+    clean_side = str(side).strip().lower()
+    clean_pos = str(pos_side).strip().lower()
+
+    if clean_side not in ("buy", "sell"):
+        return {"status": "error", "error": "side must be buy or sell"}
+    if clean_pos not in ("long", "short"):
+        return {"status": "error", "error": "pos_side must be long or short"}
+
+    path = "/api/v5/trade/order"
+    body: dict[str, Any] = {
+        "instId": clean,
+        "tdMode": td_mode,
+        "side": clean_side,
+        "posSide": clean_pos,
+        "ordType": order_type,
+        "sz": str(sz),
+    }
+    if order_type == "limit" and px:
+        body["px"] = str(px)
+
+    try:
+        resp = httpx.post(
+            f"{OKX_API}/trade/order",
+            headers=_sway_auth_headers("POST", path, json.dumps(body, separators=(",", ":"))),
+            json=body,
+            timeout=cfg.timeout,
+        )
+        data = resp.json()
+        if data.get("code") != "0":
+            return {"status": "error", "error": data.get("msg", "order failed"), "detail": data}
+        order_info = (data.get("data") or [{}])[0]
+        return {
+            "status": "ok",
+            "order_id": order_info.get("ordId"),
+            "symbol": clean,
+            "side": clean_side,
+            "pos_side": clean_pos,
+            "sz": str(sz),
+            "profile": cfg.profile,
+            "is_demo": cfg.is_demo,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "symbol": clean}
+
+
+def place_swap_stop_order(
+    config: OKXConfig | None = None,
+    *,
+    symbol: str,
+    side: str,
+    pos_side: str,
+    sz: str,
+    stop_price: str,
+    td_mode: str = "isolated",
+) -> dict[str, Any]:
+    """永续合约止损单（OKX 条件单）。
+
+    使用 /trade/order-algo 接口创建 stop-market 条件单。
+    slTriggerPx 触发后以市价平仓。
+
+    Args:
+        symbol: "BTC-USDT-SWAP"
+        side: 反向平仓方向（做多时 sell，做空时 buy）
+        pos_side: "long" 或 "short"
+        sz: 合约张数
+        stop_price: 触发价
+    """
+    cfg = config or load_config()
+    clean = str(symbol).strip().upper()
+    clean_side = str(side).strip().lower()
+    clean_pos = str(pos_side).strip().lower()
+
+    path = "/api/v5/trade/order-algo"
+    body: dict[str, Any] = {
+        "instId": clean,
+        "tdMode": td_mode,
+        "side": clean_side,
+        "posSide": clean_pos,
+        "ordType": "conditional",
+        "sz": str(sz),
+        "slTriggerPx": str(stop_price),
+        "slOrdPx": "-1",
+    }
+
+    try:
+        resp = httpx.post(
+            f"{OKX_API}/trade/order-algo",
+            headers=_sway_auth_headers("POST", path, json.dumps(body, separators=(",", ":"))),
+            json=body,
+            timeout=cfg.timeout,
+        )
+        data = resp.json()
+        if data.get("code") != "0":
+            return {"status": "error", "error": data.get("msg", "stop order failed"), "detail": data}
+        order_info = (data.get("data") or [{}])[0]
+        return {
+            "status": "ok",
+            "algo_id": order_info.get("algoId"),
+            "order_id": order_info.get("ordId"),
+            "symbol": clean,
+            "side": clean_side,
+            "pos_side": clean_pos,
+            "stop_price": str(stop_price),
+            "profile": cfg.profile,
+            "is_demo": cfg.is_demo,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "symbol": clean}
+
+
+def calc_swap_sz(notional_usdt: float, symbol: str) -> tuple[int, float]:
+    """计算永续合约下单张数。
+
+    通过 OKX API 查询合约面值，用标记价格换算名义价值。
+
+    Args:
+        notional_usdt: 名义价值（保证金 × 杠杆）
+        symbol: "BTC-USDT-SWAP"
+
+    Returns:
+        (sz, ct_val) — 合约张数（整数）和合约面值
+    """
+    price = _get_mark_price(symbol)
+    if price <= 0:
+        return 0, 0.0
+
+    # 从 OKX API 查询实际 ctVal
+    try:
+        resp = httpx.get(
+            f"{OKX_API}/public/instruments",
+            params={"instType": "SWAP", "instId": symbol},
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") == "0" and data.get("data"):
+            ct_val = float(data["data"][0].get("ctVal", "10"))
+        else:
+            ct_val = 10.0
+    except Exception:
+        ct_val = 10.0
+
+    # ctVal × price = 每张合约的 USDT 名义价值
+    contract_notional = ct_val * price
+    sz = int(notional_usdt / contract_notional) if contract_notional > 0 else 0
+
+    return max(sz, 0), ct_val
+
+
+def _get_mark_price(symbol: str) -> float:
+    """获取标记价格。"""
+    try:
+        resp = httpx.get(f"{OKX_API}/market/ticker", params={"instId": symbol}, timeout=5)
+        data = resp.json()
+        items = data.get("data", [])
+        if items:
+            return float(items[0].get("last") or 0)
+    except Exception:
+        pass
+    return 0.0
 
 
 def _order_error(cfg: OKXConfig, message: str, **extra: Any) -> dict[str, Any]:

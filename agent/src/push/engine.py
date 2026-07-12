@@ -81,24 +81,24 @@ class PushEngine:
         if config.get("price_alerts", {}).get("enabled"):
             self._check_price_alerts(config, now)
 
-        # 2. 每小时推送 (整点前后 2 分钟内触发)
-        if config.get("hourly_push", {}).get("enabled"):
-            if now.minute <= 2 and time.time() - self._last_hourly > 3000:
-                self._last_hourly = time.time()
-                self._send_hourly_summary(config)
+        # 2. 每小时推送 — Phase 3.6 精简：不再发送每小时行情
+        # if config.get("hourly_push", {}).get("enabled"):
+        #     if now.minute <= 2 and time.time() - self._last_hourly > 3000:
+        #         self._last_hourly = time.time()
+        #         self._send_hourly_summary(config)
 
-        # 3. 新闻推送 (每天指定时间，独立线程不阻塞主循环)
-        if config.get("news_push", {}).get("enabled"):
-            for push_time in config["news_push"].get("times", ["08:00", "20:00"]):
-                key = f"{today_str}_{push_time}"
-                if time_str == push_time and not self._last_news_sent.get(key):
-                    self._last_news_sent[key] = True
-                    threading.Thread(target=self._send_news_digest, args=(config,), daemon=True).start()
+        # 3. 新闻推送 — Phase 3.6 精简：不再发送新闻
+        # if config.get("news_push", {}).get("enabled"):
+        #     for push_time in config["news_push"].get("times", ["08:00", "20:00"]):
+        #         key = f"{today_str}_{push_time}"
+        #         if time_str == push_time and not self._last_news_sent.get(key):
+        #             self._last_news_sent[key] = True
+        #             threading.Thread(target=self._send_news_digest, args=(config,), daemon=True).start()
 
-            # 清理昨天的记录
-            for k in list(self._last_news_sent.keys()):
-                if not k.startswith(today_str):
-                    del self._last_news_sent[k]
+        #     # 清理昨天的记录
+        #     for k in list(self._last_news_sent.keys()):
+        #         if not k.startswith(today_str):
+        #             del self._last_news_sent[k]
 
     def _check_price_alerts(self, config: dict, now: datetime):
         symbols = config.get("symbols", ["BTC-USDT", "ETH-USDT", "SOL-USDT"])
