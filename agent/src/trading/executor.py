@@ -13,9 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,8 @@ import requests as req
 
 from src.indicators.ta import compute_ema, compute_hurst
 from src.live.halt import halt_flag_set, trip_halt
-from src.push.feishu_sender import send_feishu_card_with_buttons
+from src.providers.chat import ChatLLM
+from src.push.feishu_sender import send_feishu_card, send_feishu_text
 from src.trade_log.db import _get_conn, init_db
 from src.trading.connectors.okx.sdk import (
     _sway_auth_headers,
@@ -91,6 +93,25 @@ class TradingExecutor:
             "TradingExecutor 启动, symbols=%s, capital=%.1f, live=%s",
             self.cfg.symbols, self.cfg.initial_capital, self.cfg.is_live,
         )
+
+        # 启动时优先恢复持仓
+        if self.state.position:
+            logger.info("检测到持仓状态，与 OKX 对账中...")
+            for attempt in range(3):
+                if self._reconcile_position():
+                    logger.info("持仓恢复成功: %s", self.state.position["symbol"])
+                    break
+                if attempt < 2:
+                    logger.warning("持仓对账失败，5秒后重试 (%d/3)", attempt + 1)
+                    time.sleep(5)
+            else:
+                logger.error("持仓恢复失败，清空本地状态")
+                self.state.position = None
+                self._save_state()
+        else:
+            # 本地无持仓但可能 OKX 上有（孤儿仓）
+            self._check_orphan_positions()
+
         self._send_startup_card()
 
         while not self._stop_flag:
@@ -122,56 +143,95 @@ class TradingExecutor:
     # 持仓对账
     # ------------------------------------------------------------------
 
-    def _reconcile_position(self):
-        """与 OKX 对账，确认持仓完整性。
+    def _check_orphan_positions(self):
+        """查询 OKX 是否有引擎不知情的仓位，如有则恢复。"""
+        try:
+            resp = req.get(
+                f"{OKX_API}/account/positions",
+                params={"instType": "SWAP"},
+                headers=_sway_auth_headers("GET", "/api/v5/account/positions", get_params={"instType": "SWAP"}),
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("code") != "0":
+                return
+            for p in data.get("data", []):
+                pos_qty = int(float(p.get("pos", "0") or 0))
+                if pos_qty <= 0:
+                    continue
+                sym = p["instId"]
+                avg_px = float(p.get("avgPx", p.get("markPx", 0)))
+                pos_side = p.get("posSide", "net")
+                lever = int(float(p.get("lever", "5")))
+                # net_mode 下方向从 upl 判断
+                upl = float(p.get("upl", 0))
+                direction = "long" if upl < 0 else "short"  # net_mode 粗略判断
+                logger.warning("发现孤儿仓位: %s qty=%d px=%.4f", sym, pos_qty, avg_px)
+                self.state.position = {
+                    "symbol": sym, "direction": direction, "pos_side": pos_side,
+                    "entry_price": avg_px,
+                    "entry_at": datetime.now(TZ_UTC).isoformat(),
+                    "size": pos_qty, "leverage": lever,
+                    "notional": round(pos_qty * float(p.get("markPx", 0)), 2),
+                    "ct_val": 10.0, "stop_order_id": "",
+                }
+                self._save_state()
+                logger.info("孤儿仓位已恢复: %s", sym)
+        except Exception:
+            logger.exception("孤儿仓位检查失败")
 
-        每轮主循环执行，HTTP GET 仅 1-2 秒。
-        - OKX 返回无匹配 → 本地持仓清零
-        - 数量不一致 → 以 OKX 为准
-        - 网络异常 → 跳过本轮（下次对账）
+    def _reconcile_position(self) -> bool:
+        """与 OKX 对账，确认持仓完整性。返回 True=对账成功。
+
+        规则：
+        - API 成功 + 匹配 → 数量以 OKX 为准，返回 True
+        - API 成功 + 无匹配 → 仓位已平，清除状态，返回 False
+        - API 失败/网络异常 → 保留状态，返回 False（下次重试）
         """
         if not self.state.position:
-            return
+            return True
         sym = self.state.position["symbol"]
-        direction = self.state.position["direction"]
         try:
             resp = req.get(
                 f"{OKX_API}/account/positions",
                 params={"instId": sym},
-                headers=_sway_auth_headers("GET", "/api/v5/account/positions"),
+                headers=_sway_auth_headers("GET", "/api/v5/account/positions", get_params={"instId": sym}),
                 timeout=10,
             )
             data = resp.json()
+            if data.get("code") != "0":
+                logger.warning("持仓对账API失败: %s", data.get("msg"))
+                return False
             positions = data.get("data", [])
 
             matched = None
-            expected_pos_side = "long" if direction == "long" else "short"
             for p in positions:
-                if p.get("instId") == sym and p.get("posSide") == expected_pos_side:
+                if p.get("instId") == sym:
                     matched = p
                     break
 
             if matched is None:
-                logger.warning("持仓对账: %s 在 OKX 已不存在，清除本地状态", sym)
+                logger.warning("持仓对账: %s 在 OKX 已平仓，清除本地状态", sym)
                 self.state.position = None
                 self._save_state()
-                return
+                return False
 
             okx_qty = int(float(matched.get("pos", 0)))
-            local_qty = self.state.position["size"]
-            if okx_qty != local_qty:
-                logger.warning(
-                    "持仓对账: %s 数量不一致 (本地=%d, OKX=%d)，修正为 OKX 值",
-                    sym, local_qty, okx_qty,
-                )
-                if okx_qty == 0:
-                    self.state.position = None
-                else:
-                    self.state.position["size"] = okx_qty
+            local_qty = self.state.position.get("size", 0)
+            if abs(okx_qty - local_qty) > 1:
+                logger.warning("持仓对账: %s 数量不一致 (本地=%d, OKX=%d)，以 OKX 为准", sym, local_qty, okx_qty)
+                self.state.position["size"] = okx_qty
                 self._save_state()
+            # 恢复缺失的 ct_val（旧 state JSON 可能没有）
+            if "ct_val" not in self.state.position:
+                _, ct, _ = calc_swap_sz(1, sym)
+                self.state.position["ct_val"] = ct
+                self._save_state()
+            return True
 
         except Exception:
-            logger.exception("持仓对账失败，跳过本轮")
+            logger.exception("持仓对账网络异常，保留状态下次重试")
+            return False
 
     # ------------------------------------------------------------------
     # 入场信号
@@ -180,7 +240,7 @@ class TradingExecutor:
     def _check_entry_signal(self):
         """检查 TSMOM 入场信号。"""
         now = time.time()
-        if now - self._last_symbol_refresh > 86400:
+        if now - getattr(self, "_last_symbol_refresh", 0) > 86400:
             self._refresh_symbols()
             self._last_symbol_refresh = now
 
@@ -222,22 +282,199 @@ class TradingExecutor:
                 logger.debug("%s 信号检查失败", sym, exc_info=True)
 
     def _refresh_symbols(self):
-        """从选币结果动态更新交易标的列表（每日执行）。"""
+        """从选币结果动态更新交易标的列表（每日执行）。
+
+        流程：程序化选前十 → AI 使用工具查新闻/解锁/风险 → 输出白名单。
+        AI 失败时 fallback 程序化前五。
+        """
         try:
             from src.tools.coin_scanner_tool import CoinScannerTool
 
             cs = CoinScannerTool()
-            result = cs.execute(top_n=5)
+            result = cs.execute(top_n=10)
             data = json.loads(result)
             candidates = data.get("candidates", [])
-            if candidates:
-                new_symbols = [c["symbol"] for c in candidates]
-                self.cfg.symbols = new_symbols
-                logger.info("选币刷新: %s", new_symbols)
+            if not candidates:
+                logger.warning("选币刷新: 无候选，清空列表禁止交易")
+                self.cfg.symbols = []
+                return
+
+            logger.info("选币刷新: 程序化初筛 %d 个候选", len(candidates))
+
+            approved = self._ai_evaluate_candidates(candidates)
+            if approved is not None:
+                self.cfg.symbols = approved
+                if not approved:
+                    logger.warning("AI 全部拒绝，白名单为空，系统空闲")
             else:
-                logger.info("选币刷新: 无候选，保留现有列表")
+                fallback = [c["symbol"] for c in candidates[:5]]
+                self.cfg.symbols = fallback
+                logger.warning("AI 评估失败，回退程序化前5: %s", fallback)
+                send_feishu_text(
+                    "⚠️ AI 评估失败\n\n本次选币已回退程序化前五，请检查 AI 服务状态。"
+                )
         except Exception:
-            logger.exception("选币刷新失败，保留已有列表")
+            logger.exception("选币刷新失败，清空列表禁止交易")
+            self.cfg.symbols = []
+
+    def _ai_evaluate_candidates(self, candidates: list[dict]) -> list[str] | None:
+        """调用 AI AgentLoop 逐币调查非技术面风险，返回 approved 白名单。
+
+        AI 可使用 web_search / crypto_news 等工具查询新闻、解锁信息等。
+        最后输出标准 JSON 格式。
+
+        Returns:
+            approved 列表（可能为空），AI 调用或解析失败返回 None。
+        """
+        import platform
+
+        from src.agent.loop import AgentLoop
+        from src.tools import build_registry
+
+        candidates_text = ""
+        for i, c in enumerate(candidates, 1):
+            quality_map = {"green": "🟢强", "yellow": "🟡标准", "blue": "🔵弱"}
+            q = quality_map.get(c.get("signal_quality", ""), "")
+            warn = f" ⚠️{c['funding_warn']}" if c.get("funding_warn") else ""
+            candidates_text += (
+                f"{i}. {c['symbol']} | {c['direction']} | 现价{c['last_price']:.4f} | "
+                f"TSMOM {c['tsmom_pct']:+.1f}% | Hurst {c['hurst']:.3f} | "
+                f"ADX {c['adx']:.1f} | 信号 {q} | "
+                f"费率{c.get('funding_rate', 0):.4f}%{warn}\n"
+            )
+
+        prompt = (
+            "你是 TSMOM 自动交易系统的选币审查 AI。\n\n"
+            "当前运行环境: " + platform.node() + "\n\n"
+            "=== 程序化初筛结果（前十名，已按信号强度排序） ===\n"
+            f"{candidates_text}\n"
+            "=== 你的调查评估任务 ===\n"
+            "你需要对上述每个候选币种进行调查，评估其非技术面风险，然后决定批准或拒绝。\n\n"
+            "调查步骤（逐个币种执行）：\n"
+            "1. 用 web_search 搜索「[币名] token unlock 2026」查看近期是否有代币解锁\n"
+            "2. 用 crypto_news 搜索该币名的关键词，查看是否有负面新闻\n"
+            "3. 用 web_search 搜索「[币名] hack exploit 2026」查看是否有安全事件\n"
+            "4. 用 web_search 搜索「[币名] delist delisting 2026」查看是否有退市风险\n\n"
+            "高效原则：\n"
+            "- 不用每个币都搜全部4步，如果前两步没发现问题，就可以通过\n"
+            "- 排前面的强信号币优先调查\n"
+            "- 不要因不确定而拒绝——只拒绝确认存在风险的币种\n\n"
+            "审批原则：\n"
+            "- 没有明显负面信息的币种默认通过（放入 approved）\n"
+            "- 存在已知代币解锁/黑客/退市/治理风险的放入 rejected，写清楚理由\n"
+            "- 信号质量 green > yellow > blue，强信号优先通过\n\n"
+            "最终输出——你必须输出严格的 JSON（不要加 markdown 代码块标记）：\n"
+            '{"approved":["XXX-USDT-SWAP","YYY-USDT-SWAP"],'
+            '"rejected":["ZZZ-USDT-SWAP"],'
+            '"reasons":{"ZZZ-USDT-SWAP":"具体拒绝理由"},'
+            '"summary":"总结：批准N个/拒绝M个，简要说明主要风险"}'
+        )
+
+        try:
+            llm = ChatLLM()
+            registry = build_registry()
+
+            agent = AgentLoop(
+                registry=registry,
+                llm=llm,
+                max_iterations=40,
+            )
+
+            result = agent.run(
+                user_message=prompt,
+                session_id="ai_screening_refresh",
+            )
+            content = (result.get("content") or "").strip()
+            logger.debug("AI 评估原始回复: %s", content[:500])
+
+            if not content:
+                logger.warning("AI 评估返回空内容")
+                return None
+
+            # 尝试从 markdown 代码块中提取 JSON
+            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+            if json_match:
+                content = json_match.group(1).strip()
+
+            # 尝试从内容中提取第一个完整的 JSON 对象
+            if not content.startswith("{"):
+                obj_start = content.find("{")
+                if obj_start >= 0:
+                    content = content[obj_start:]
+
+            ai_result = json.loads(content)
+            approved = ai_result.get("approved", [])
+            rejected = ai_result.get("rejected", [])
+            reasons = ai_result.get("reasons", {})
+            summary = ai_result.get("summary", "")
+
+            if not isinstance(approved, list):
+                logger.warning("AI 返回的 approved 不是列表: %s", type(approved))
+                return None
+
+            self._send_ai_evaluation_card(
+                approved, rejected, reasons, summary, candidates
+            )
+            return approved
+
+        except json.JSONDecodeError:
+            logger.exception(
+                "AI 评估 JSON 解析失败，原始回复: %s",
+                content[:500] if "content" in dir() else "N/A",
+            )
+            send_feishu_text(
+                "⚠️ AI 评估失败\n\n"
+                "AI 返回的 JSON 格式无法解析，已回退程序化选币。\n"
+                "请检查 AI 模型输出是否符合约定的 JSON 格式。"
+            )
+            return None
+        except Exception:
+            logger.exception("AI 评估调用异常")
+            return None
+
+    def _send_ai_evaluation_card(
+        self,
+        approved: list[str],
+        rejected: list[str],
+        reasons: dict[str, str],
+        summary: str,
+        candidates: list[dict],
+    ):
+        """发送 AI 评估结果飞书卡片。"""
+        bj_time = (datetime.now(TZ_UTC) + timedelta(hours=8)).strftime("%m-%d %H:%M")
+
+        symbols_info: dict[str, dict] = {}
+        for c in candidates:
+            symbols_info[c["symbol"]] = c
+
+        lines = [
+            f"**🤖 AI 选币评估** - {bj_time} (北京)\n",
+        ]
+
+        if approved:
+            lines.append("**✅ 批准交易 ({0})**\n".format(len(approved)))
+            for sym in approved:
+                info = symbols_info.get(sym, {})
+                d = "📈" if info.get("direction") == "long" else "📉"
+                q = info.get("signal_quality", "")
+                q_emoji = {"green": "🟢", "yellow": "🟡", "blue": "🔵"}.get(q, "")
+                lines.append(
+                    f"{d} {sym} {info.get('direction', '?')} "
+                    f"TSMOM {info.get('tsmom_pct', 0):+.1f}% {q_emoji}\n"
+                )
+            lines.append("")
+
+        if rejected:
+            lines.append(f"**❌ 拒绝交易 ({len(rejected)})**\n")
+            for sym in rejected:
+                reason = reasons.get(sym, "未提供理由")
+                lines.append(f"• {sym}: {reason}\n")
+            lines.append("")
+
+        if summary:
+            lines.append(f"**📋 评估摘要**\n{summary}\n")
+
+        send_feishu_card("AI 选币评估", "".join(lines))
 
     # ------------------------------------------------------------------
     # 开仓
@@ -245,6 +482,13 @@ class TradingExecutor:
 
     def _open_position(self, candidate: dict):
         """开仓：halt→kelly→leverage→order→stop order→feishu→log。"""
+        try:
+            self._do_open_position(candidate)
+        except Exception:
+            logger.exception("开仓异常 %s", candidate.get("symbol", "?"))
+
+    def _do_open_position(self, candidate: dict):
+        """开仓实现（被 try/except 包裹）。"""
         if halt_flag_set():
             logger.warning("halt 已触发，跳过开仓")
             return
@@ -259,21 +503,16 @@ class TradingExecutor:
         # Kelly sizing
         kelly_r = self.kelly.calculate()
         equity = kelly_r.get("equity", self.cfg.initial_capital)
-        f_quarter = kelly_r["f_quarter"]
-        position_capital = equity * f_quarter
+        position_capital = kelly_r.get("position_capital", equity * 0.1)
         leverage = 5
         notional = position_capital * leverage
-        sz, ct_val = calc_swap_sz(notional, sym)
-
-        if sz < 1:
-            logger.warning("名义价值 %.1f 不足以开 1 张 %s (ctVal=%.2f)", notional, sym, ct_val)
-            return
+        sz, ct_val, min_sz = calc_swap_sz(notional, sym)
 
         # 双向持仓方向映射
         pos_side = "long" if direction == "long" else "short"
         side = "buy" if direction == "long" else "sell"
 
-        logger.info("开仓: %s %s sz=%d price=%.4f notional=%.1f", sym, direction, sz, entry_price, notional)
+        logger.info("开仓: %s %s sz=%s price=%.4f notional=%.1f", sym, direction, sz, entry_price, notional)
 
         # 1. 设置杠杆
         lev_r = set_swap_leverage(symbol=sym, lever=str(leverage))
@@ -281,10 +520,14 @@ class TradingExecutor:
             logger.error("设置杠杆失败: %s", lev_r.get("error"))
             return
 
-        # 2. 市价开仓
-        order_r = place_swap_order(symbol=sym, side=side, pos_side=pos_side, sz=str(sz))
+        # 2. 市价开仓（net_mode 不传 pos_side）
+        order_r = place_swap_order(symbol=sym, side=side, sz=str(sz))
         if order_r["status"] != "ok":
-            logger.error("开仓失败: %s", order_r.get("error"))
+            detail = order_r.get("detail", {})
+            data_list = detail.get("data", [{}])
+            s_code = data_list[0].get("sCode", "") if data_list else ""
+            s_msg = data_list[0].get("sMsg", "") if data_list else ""
+            logger.error("开仓失败: %s (sCode=%s sMsg=%s)", order_r.get("error"), s_code, s_msg)
             return
 
         # 3. 硬止损（ATR × 3，防崩溃）
@@ -293,13 +536,17 @@ class TradingExecutor:
             stop_price = entry_price - 3 * atr if direction == "long" else entry_price + 3 * atr
             stop_side = "sell" if direction == "long" else "buy"
             stop_r = place_swap_stop_order(
-                symbol=sym, side=stop_side, pos_side=pos_side,
+                symbol=sym, side=stop_side,
                 sz=str(sz), stop_price=str(round(stop_price, 6)),
             )
             if stop_r["status"] == "ok":
                 logger.info("止损单已设置: algo_id=%s stop=%.4f", stop_r.get("algo_id"), stop_price)
             else:
-                logger.error("止损单设置失败: %s", stop_r.get("error"))
+                detail = stop_r.get("detail", {})
+                data_list = detail.get("data", [{}])
+                s_code = data_list[0].get("sCode", "") if data_list else ""
+                s_msg = data_list[0].get("sMsg", "") if data_list else ""
+                logger.error("止损单设置失败: %s (sCode=%s sMsg=%s)", stop_r.get("error","?"), s_code, s_msg)
             stop_order_id = stop_r.get("algo_id") or stop_r.get("order_id", "")
         else:
             stop_order_id = ""
@@ -313,13 +560,15 @@ class TradingExecutor:
             "entry_at": datetime.now(TZ_UTC).isoformat(),
             "size": sz,
             "leverage": leverage,
+            "notional": round(notional, 2),
+            "ct_val": ct_val,
             "stop_order_id": stop_order_id,
         }
         self._save_state()
 
         # 5. 飞书通知 + 交易日志
         self._log_trade(sym, direction, entry_price, sz, "open")
-        self._send_trade_card(sym, direction, entry_price, sz, str(order_r.get("order_id", "")))
+        self._send_trade_card(sym, direction, entry_price, round(notional, 2), str(order_r.get("order_id", "")))
 
     # ------------------------------------------------------------------
     # 止损 / 平仓
@@ -383,17 +632,18 @@ class TradingExecutor:
         # 平仓方向和开仓相反
         close_side = "sell" if direction == "long" else "buy"
 
-        order_r = place_swap_order(symbol=sym, side=close_side, pos_side=pos_side, sz=str(sz))
+        order_r = place_swap_order(symbol=sym, side=close_side, sz=str(sz))
         if order_r["status"] != "ok":
             logger.error("平仓失败: %s", order_r.get("error"))
             return
 
         # 获取当前价格算 PnL
         current_price = self._get_current_price(sym)
+        ct_val = pos.get("ct_val", 10.0)
         if direction == "long":
-            pnl = (current_price - entry_price) * pos["size"] * self._get_ct_val(sym)
+            pnl = (current_price - entry_price) * pos["size"] * ct_val
         else:
-            pnl = (entry_price - current_price) * pos["size"] * self._get_ct_val(sym)
+            pnl = (entry_price - current_price) * pos["size"] * ct_val
 
         logger.info("平仓: %s %s reason=%s pnl=%.2f", sym, direction, reason, pnl)
 
@@ -404,7 +654,11 @@ class TradingExecutor:
         self._log_trade(sym, direction, entry_price, pos["size"], "close", pnl)
 
         # 通知
-        self._send_close_card(sym, direction, entry_price, current_price, pnl, reason)
+        hold_hours = 0.0
+        if pos.get("entry_at"):
+            entry_dt = datetime.fromisoformat(pos["entry_at"])
+            hold_hours = (datetime.now(TZ_UTC) - entry_dt).total_seconds() / 3600
+        self._send_close_card(sym, direction, entry_price, current_price, pnl, reason, hold_hours)
 
         # 清空状态
         self.state.position = None
@@ -551,56 +805,45 @@ class TradingExecutor:
             logger.exception("交易日志写入失败")
 
     def _send_trade_card(self, symbol: str, direction: str, price: float,
-                         size: int, order_id: str):
+                         notional: float, order_id: str):
+        from src.push.feishu_sender import send_feishu_card
         d_emoji = "📈" if direction == "long" else "📉"
+        bj_time = (datetime.now(TZ_UTC) + timedelta(hours=8)).strftime("%m-%d %H:%M")
         text = (
-            f"**{d_emoji} 开仓: {symbol} {direction}**\n\n"
+            f"**{d_emoji} 开仓 {symbol} {direction}**\n\n"
+            f"时间: {bj_time} (北京)\n"
             f"入场价: {price:.4f}\n"
-            f"张数: {size}\n"
-            f"杠杆: 5X\n"
+            f"名义价值: {notional:.1f}U\n"
             f"订单号: {order_id}\n"
         )
-        send_feishu_card_with_buttons(
-            "交易通知", text,
-            buttons=[
-                {"text": "停止交易", "type": "danger", "value": {"action": "halt_trading"}},
-                {"text": "查看持仓", "type": "default", "value": {"action": "view_positions"}},
-            ],
-        )
+        send_feishu_card(f"开仓 {symbol}", text)
 
     def _send_close_card(self, symbol: str, direction: str, entry: float,
-                         exit_price: float, pnl: float, reason: str):
+                         exit_price: float, pnl: float, reason: str, hold_hours: float = 0):
+        from src.push.feishu_sender import send_feishu_card
         d_emoji = "📈" if direction == "long" else "📉"
-        pnl_str = f"+{pnl:.2f}U" if pnl >= 0 else f"{pnl:.2f}U"
+        pnl_symbol = "+" if pnl >= 0 else "-"
+        bj_time = (datetime.now(TZ_UTC) + timedelta(hours=8)).strftime("%m-%d %H:%M")
         text = (
-            f"**{d_emoji} 平仓: {symbol} {direction}**\n\n"
-            f"入场价: {entry:.4f}\n"
-            f"出场价: {exit_price:.4f}\n"
-            f"盈亏: {pnl_str}\n"
+            f"**{d_emoji} 平仓 {symbol} {direction}**\n\n"
+            f"时间: {bj_time} (北京)\n"
+            f"入场: {entry:.4f} → 出场: {exit_price:.4f}\n"
+            f"盈亏: {pnl_symbol}{abs(pnl):.2f}U\n"
+            f"持仓: {hold_hours:.1f}h\n"
             f"原因: {reason}\n"
         )
-        send_feishu_card_with_buttons(
-            "平仓通知", text,
-            buttons=[
-                {"text": "停止交易", "type": "danger", "value": {"action": "halt_trading"}},
-            ],
-        )
+        send_feishu_card(f"平仓 {symbol}", text)
 
     def _send_startup_card(self):
+        from src.push.feishu_sender import send_feishu_card
         env = "LIVE" if self.cfg.is_live else "DEMO"
         text = (
-            f"**TSMOM 交易引擎已启动**\n\n"
+            f"**TSMOM 引擎启动**\n\n"
             f"环境: {env}\n"
             f"币种: {', '.join(self.cfg.symbols)}\n"
-            f"单次最大仓位: {self.cfg.max_positions}\n"
-            f"时间: {datetime.now(TZ_UTC).isoformat()}\n"
+            f"时间: {datetime.now(TZ_UTC).strftime('%Y-%m-%d %H:%M')} (UTC)\n"
         )
-        send_feishu_card_with_buttons(
-            "交易引擎启动", text,
-            buttons=[
-                {"text": "停止交易", "type": "danger", "value": {"action": "halt_trading"}},
-            ],
-        )
+        send_feishu_card("引擎启动", text)
 
     def _send_alert(self, msg: str):
         from src.push.feishu_sender import send_feishu_text

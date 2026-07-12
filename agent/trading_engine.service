@@ -9,8 +9,9 @@ WorkingDirectory=/root/OKX-Analyzer-v3/agent
 Environment="OKX_FLAG=0"
 Environment="OKX_RELAY=http://127.0.0.1:8080"
 ExecStart=/usr/bin/python3 /root/OKX-Analyzer-v3/agent/trading_engine.py
-Restart=on-failure
+# Restart=on-failure    # 待稳定后取消注释
 RestartSec=30
+TimeoutStopSec=600
 
 [Install]
 WantedBy=multi-user.target

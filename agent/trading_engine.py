@@ -21,6 +21,17 @@ import os
 import signal
 import sys
 
+# 加载 .env（systemd 不会自动加载）
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                if _k not in os.environ:
+                    os.environ[_k] = _v
+
 from src.trading.executor import ExecutorConfig, TradingExecutor
 
 logging.basicConfig(

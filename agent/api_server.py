@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Request, status  # noqa: F401
-from fastapi.responses import FileResponse  # noqa: F401
+from fastapi.responses import FileResponse, JSONResponse  # noqa: F401
 from fastapi.middleware.cors import CORSMiddleware
 from rich.console import Console
 
@@ -332,12 +332,57 @@ def serve_main(argv: list[str] | None = None) -> int:
     print("=" * 50)
 
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        import os as _os
+        _ssl_key = _os.path.expanduser("~/.vibe-trading/server.key")
+        _ssl_crt = _os.path.expanduser("~/.vibe-trading/server.crt")
+        _ssl_kwargs = {}
+        if _os.path.exists(_ssl_key) and _os.path.exists(_ssl_crt):
+            _ssl_kwargs = {"ssl_keyfile": _ssl_key, "ssl_certfile": _ssl_crt}
+            print(f"  HTTPS enabled on port {args.port}")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info", **_ssl_kwargs)
     finally:
         if vite_proc:
             vite_proc.terminate()
             print("[dev] Vite stopped")
     return 0
+
+
+# ── 飞书卡片回调 ──
+
+@app.post("/feishu/card-callback")
+async def feishu_card_callback(request: Request):
+    """飞书卡片交互回调 — URL 验证 + 按钮点击处理。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"code": -1, "msg": "invalid json"})
+
+    # URL 验证（首次配置回调地址）
+    if body.get("type") == "url_verification":
+        return JSONResponse({"challenge": body.get("challenge", "")})
+
+    # 卡片回传交互
+    if body.get("header", {}).get("event_type") == "card.action.trigger":
+        action = body.get("event", {}).get("action", {})
+        raw = action.get("value", "{}")
+        import json as _json
+        try:
+            val = _json.loads(raw)
+        except (_json.JSONDecodeError, TypeError):
+            val = raw
+        key = val if isinstance(val, str) else val.get("action", "")
+
+        if key in ("halt_trading", "confirm_halt"):
+            from src.live.halt import trip_halt
+            trip_halt(by="feishu", reason="用户通过飞书按钮停止交易")
+            return JSONResponse({"toast": {"type": "success", "content": "交易已停止"}})
+
+        if key == "view_positions":
+            return JSONResponse({"toast": {"type": "info", "content": "请发送「查看持仓」给飞书Bot查询"}})
+
+        return JSONResponse({"toast": {"type": "info", "content": f"未知操作: {key}"}})
+
+    return JSONResponse({"code": 0})
 
 
 if __name__ == "__main__":

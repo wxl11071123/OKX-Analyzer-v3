@@ -32,7 +32,7 @@ JOBS = [
             "  - 是否有黑客攻击/合约漏洞/退市风险\n"
             "  - 是否有重大治理变更或团队异动\n\n"
             "步骤 3: 以 JSON 格式输出评估结果（必须严格遵守以下格式）。\n"
-            "步骤 4: 用 send_feishu_card_with_buttons 推送结果，附带 [停止交易] [查看持仓] 按钮。\n\n"
+            "步骤 4: 用 send_feishu_card 推送结果。\n\n"
             "JSON 输出格式（必须严格遵守）：\n"
             '{"status":"ok","selected":[{"symbol":"XXX-USDT-SWAP","direction":"long","price":0.0,"tsmom_pct":0.0,"hurst":0.0,"reason":"技术面强劲无风险事件"}],'
             '"rejected":[{"symbol":"ZZZ-USDT-SWAP","reason":"近期大额代币解锁"}],"summary":"本次扫描共筛选出 N 个推荐币种"}\n\n'
@@ -47,7 +47,7 @@ JOBS = [
             "生成 TSMOM 交易日报。\n"
             "1. 调用 src.push.report_generator.generate_daily_report() 生成日报\n"
             "2. 日报包含：持仓状态、今日交易、今日盈亏、Hurst 值、下次选币时间\n"
-            "3. 通过 send_feishu_card_with_buttons 推送到飞书，附带 [停止交易] [查看持仓] 按钮"
+            "3. 通过 send_feishu_card 推送到飞书"
         ),
         "schedule": "0 14 * * *",
         "config": {"report": "daily", "push": "feishu"},
@@ -59,7 +59,7 @@ JOBS = [
             "1. 调用 src.push.report_generator.generate_weekly_report() 生成周报数据\n"
             "2. AI 基于数据写周度评估分析（策略表现、建议、风险提示）\n"
             "3. 周报包含：本周统计、胜率、盈亏比、f_kelly 更新、Hurst 值、AI 周度评估\n"
-            "4. 通过 send_feishu_card_with_buttons 推送到飞书，附带 [停止交易] 按钮\n"
+            "4. 通过 send_feishu_card 推送到飞书\n"
             "retry: 如果 generate_weekly_report 失败，重试最多 2 次（间隔 10 秒）。2 次都失败则推送 send_feishu_text('[周报生成失败]')"
         ),
         "schedule": "0 2 * * 1",

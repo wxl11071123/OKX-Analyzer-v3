@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,8 +33,7 @@ KLINE_BARS = 300
 KLINE_INTERVAL = "4H"
 ADX_PERIOD = 14
 ATR_PERIOD = 14
-RATE_LIMIT_SLEEP = 0.15
-
+MAX_CONCURRENT = 6
 FUNDING_LONG_DANGER = 0.001
 FUNDING_SHORT_DANGER = -0.0005
 
@@ -93,49 +93,22 @@ class CoinScannerTool(BaseTool):
             if tickers_df.empty:
                 return _ok({"scanned": total, "layer1_pass": 0, "candidates": []})
 
-            # ===== 第二层：拉 K 线 + TSMOM + Hurst =====
-            logger.info("第二层: 拉取 4H K线 + TSMOM + Hurst...")
+            # ===== 第二层：并发拉 K 线 + TSMOM + Hurst =====
+            logger.info("第二层: 并发拉取 4H K线 + TSMOM + Hurst (max_workers=%d)...", MAX_CONCURRENT)
+            symbols = [row["instId"] for _, row in tickers_df.iterrows()]
             signal_results: list[dict] = []
-            for _idx, row in tickers_df.iterrows():
-                sym = row["instId"]
-                try:
-                    df = _fetch_klines(sym, KLINE_BARS, KLINE_INTERVAL)
-                    if df is None or len(df) < 200:
-                        logger.debug("%s: K线不足 (%s)", sym, len(df) if df is not None else "N/A")
-                        continue
-                    time.sleep(RATE_LIMIT_SLEEP)
-
-                    close = df["close"]
-                    tsmom_ret = float(close.pct_change(TSMOM_LOOKBACK).iloc[-1])
-                    if pd.isna(tsmom_ret):
-                        continue
-
-                    hurst_series = compute_hurst(close, HURST_WINDOW)
-                    hurst_val = float(hurst_series.iloc[-1])
-                    if pd.isna(hurst_val) or hurst_val <= hurst_threshold:
-                        continue
-
-                    direction = "long" if tsmom_ret > 0 else "short"
-                    if tsmom_ret == 0:
-                        continue
-
-                    atr_series = compute_atr(df["high"], df["low"], close, period=ATR_PERIOD)
-                    adx_df = compute_adx(df["high"], df["low"], close, period=ADX_PERIOD)
-                    atr_val = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
-                    adx_val = float(adx_df["adx"].iloc[-1]) if not adx_df.empty else 0.0
-
-                    signal_results.append({
-                        "symbol": sym,
-                        "direction": direction,
-                        "tsmom_pct": round(tsmom_ret * 100, 2),
-                        "hurst": round(hurst_val, 4),
-                        "adx": round(adx_val, 2),
-                        "atr": round(atr_val, 6),
-                        "last_price": float(close.iloc[-1]),
-                    })
-                except Exception:
-                    logger.debug("%s: 计算失败", sym, exc_info=True)
-                    continue
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
+                futures = {
+                    pool.submit(_process_single_symbol, sym, hurst_threshold): sym
+                    for sym in symbols
+                }
+                for fut in as_completed(futures):
+                    try:
+                        result = fut.result()
+                        if result:
+                            signal_results.append(result)
+                    except Exception:
+                        logger.debug("%s: 处理失败", futures[fut], exc_info=True)
 
             n2 = len(signal_results)
             n2_long = sum(1 for r in signal_results if r["direction"] == "long")
@@ -159,24 +132,27 @@ class CoinScannerTool(BaseTool):
                 else:
                     r["signal_quality"] = "red"
 
-            # ===== 第四层：资金费率过滤 =====
-            logger.info("第四层: 查询资金费率...")
-            for r in signal_results:
-                try:
-                    rate = _fetch_funding_rate(r["symbol"])
-                    r["funding_rate"] = round(rate["rate_8h"] * 100, 4)
-                    r["funding_annual_pct"] = round(rate["annualized"], 2)
-                    if r["direction"] == "long" and rate["rate_8h"] > FUNDING_LONG_DANGER:
-                        r["funding_warn"] = "多头拥挤"
-                    elif r["direction"] == "short" and rate["rate_8h"] < FUNDING_SHORT_DANGER:
-                        r["funding_warn"] = "空头拥挤"
-                    else:
-                        r["funding_warn"] = ""
-                except Exception:
-                    r["funding_rate"] = 0.0
-                    r["funding_annual_pct"] = 0.0
-                    r["funding_warn"] = "查询失败"
-                time.sleep(RATE_LIMIT_SLEEP)
+            # ===== 第四层：并查资金费率 =====
+            logger.info("第四层: 并发查询资金费率...")
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
+                futures = {pool.submit(_fetch_funding_rate, r["symbol"]): i for i, r in enumerate(signal_results)}
+                for fut in as_completed(futures):
+                    idx = futures[fut]
+                    r = signal_results[idx]
+                    try:
+                        rate = fut.result()
+                        r["funding_rate"] = round(rate["rate_8h"] * 100, 4)
+                        r["funding_annual_pct"] = round(rate["annualized"], 2)
+                        if r["direction"] == "long" and rate["rate_8h"] > FUNDING_LONG_DANGER:
+                            r["funding_warn"] = "多头拥挤"
+                        elif r["direction"] == "short" and rate["rate_8h"] < FUNDING_SHORT_DANGER:
+                            r["funding_warn"] = "空头拥挤"
+                        else:
+                            r["funding_warn"] = ""
+                    except Exception:
+                        r["funding_rate"] = 0.0
+                        r["funding_annual_pct"] = 0.0
+                        r["funding_warn"] = "查询失败"
 
             # ===== 第五层：风控计算 =====
             for r in signal_results:
@@ -235,8 +211,12 @@ class CoinScannerTool(BaseTool):
 
 
 def _fetch_all_swap_tickers() -> pd.DataFrame:
-    """拉取所有 USDT-SWAP 行情。"""
-    resp = httpx.get(f"{OKX_BASE}/market/tickers", params={"instType": "SWAP"}, timeout=20)
+    """拉取所有 USDT-SWAP 行情（带 429 重试）。"""
+    resp = _http_get_with_retry(
+        f"{OKX_BASE}/market/tickers",
+        {"instType": "SWAP"},
+        timeout=20,
+    )
     data = resp.json()
     if data.get("code") != "0":
         logger.error("行情拉取失败: %s", data.get("msg"))
@@ -268,12 +248,100 @@ def _filter_liquidity(df: pd.DataFrame, min_vol: float) -> pd.DataFrame:
     return df[(df["vol24h_usdt"] > min_vol) & (df["spread_pct"] < MAX_SPREAD_PCT)].copy()
 
 
-def _fetch_klines(symbol: str, limit: int, interval: str) -> pd.DataFrame | None:
-    """拉取 OKX K 线数据。"""
+def _process_single_symbol(sym: str, hurst_threshold: float) -> dict | None:
+    """单个币种的 K 线拉取 + 指标计算，供线程池并发调用。"""
     try:
-        resp = httpx.get(
+        df = _fetch_klines(sym, KLINE_BARS, KLINE_INTERVAL)
+        if df is None or len(df) < 200:
+            logger.debug("%s: K线不足 (%s)", sym, len(df) if df is not None else "N/A")
+            return None
+
+        close = df["close"]
+        tsmom_ret = float(close.pct_change(TSMOM_LOOKBACK).iloc[-1])
+        if pd.isna(tsmom_ret):
+            return None
+
+        hurst_series = compute_hurst(close, HURST_WINDOW)
+        hurst_val = float(hurst_series.iloc[-1])
+        if pd.isna(hurst_val) or hurst_val <= hurst_threshold:
+            return None
+
+        direction = "long" if tsmom_ret > 0 else "short"
+        if tsmom_ret == 0:
+            return None
+
+        atr_series = compute_atr(df["high"], df["low"], close, period=ATR_PERIOD)
+        adx_df = compute_adx(df["high"], df["low"], close, period=ADX_PERIOD)
+        atr_val = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
+        adx_val = float(adx_df["adx"].iloc[-1]) if not adx_df.empty else 0.0
+
+        return {
+            "symbol": sym,
+            "direction": direction,
+            "tsmom_pct": round(tsmom_ret * 100, 2),
+            "hurst": round(hurst_val, 4),
+            "adx": round(adx_val, 2),
+            "atr": round(atr_val, 6),
+            "last_price": float(close.iloc[-1]),
+        }
+    except Exception:
+        logger.debug("%s: 计算失败", sym, exc_info=True)
+        return None
+
+
+def _http_get_with_retry(url: str, params: dict, timeout: int, retries: int = 2) -> httpx.Response:
+    """HTTP GET 带 429 重试。"""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            resp = httpx.get(url, params=params, timeout=timeout)
+            if resp.status_code == 429 and attempt < retries:
+                time.sleep(1.0)
+                continue
+            return resp
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(1.0)
+    raise last_exc  # type: ignore[misc]
+
+
+def _fetch_klines(symbol: str, limit: int, interval: str) -> pd.DataFrame | None:
+    """拉取 OKX K 线数据（带原子 CSV 缓存，4h TTL）。
+
+    缓存策略：
+    - 写入临时文件后原子 rename，避免写入中断导致坏文件
+    - 4h TTL（一根新 K 线的时间），超时自动重拉
+    - 读取失败自动删缓存 + 重拉
+    """
+    import hashlib
+    cache_dir = os.path.join(os.path.expanduser("~"), ".vibe-trading", "coin_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    safe = symbol.replace("/", "-").replace(":", "_")
+    cache_path = os.path.join(cache_dir, f"{safe}_{interval}_{limit}.csv")
+    cache_ttl = 14400  # 4 小时（4H K 线一根的时间）
+
+    # 检查缓存
+    if os.path.exists(cache_path):
+        mtime = os.path.getmtime(cache_path)
+        if time.time() - mtime < cache_ttl:
+            try:
+                df = pd.read_csv(cache_path)
+                if "close" in df.columns and len(df) >= limit * 0.9:
+                    return df
+            except Exception:
+                pass
+        # 缓存过期或损坏，删除
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
+
+    # 拉取 OKX
+    try:
+        resp = _http_get_with_retry(
             f"{OKX_BASE}/market/candles",
-            params={"instId": symbol, "bar": interval, "limit": str(limit)},
+            {"instId": symbol, "bar": interval, "limit": str(limit)},
             timeout=20,
         )
         data = resp.json()
@@ -288,6 +356,11 @@ def _fetch_klines(symbol: str, limit: int, interval: str) -> pd.DataFrame | None
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(subset=["close"])
         df = df.sort_values("ts").reset_index(drop=True)
+
+        # 原子写入：先写临时文件，再 rename
+        tmp_path = cache_path + ".tmp"
+        df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, cache_path)
         return df
     except Exception as e:
         logger.debug("%s: K线拉取失败: %s", symbol, e)
@@ -295,8 +368,12 @@ def _fetch_klines(symbol: str, limit: int, interval: str) -> pd.DataFrame | None
 
 
 def _fetch_funding_rate(symbol: str) -> dict:
-    """查询资金费率。"""
-    resp = httpx.get(f"{OKX_BASE}/public/funding-rate", params={"instId": symbol}, timeout=10)
+    """查询资金费率（带 429 重试）。"""
+    resp = _http_get_with_retry(
+        f"{OKX_BASE}/public/funding-rate",
+        {"instId": symbol},
+        timeout=10,
+    )
     data = resp.json()
     if data.get("code") != "0" or not data.get("data"):
         return {"rate_8h": 0.0, "annualized": 0.0}

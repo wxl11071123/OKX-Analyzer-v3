@@ -516,11 +516,19 @@ RELAY = os.getenv("OKX_RELAY", "https://www.okx.com")
 OKX_API = f"{RELAY}/api/v5"
 
 
-def _sway_auth_headers(method: str, path: str, body: str = "") -> dict[str, str]:
-    """构建 OKX 签名头。POST 请求需传入 JSON body。"""
+def _sway_auth_headers(method: str, path: str, body: str = "", get_params: dict[str, str] | None = None) -> dict[str, str]:
+    """构建 OKX 签名头。POST 请求需传入 JSON body。
+
+    GET 请求的查询参数必须包含在签名路径中（OKX 文档要求）。
+    """
     ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     secret = os.getenv("OKX_API_SECRET", "")
-    prehash = ts + method.upper() + path + body
+    # GET 请求的 query params 必须包含在签名路径中
+    sign_path = path
+    if get_params and method.upper() == "GET":
+        qs = "&".join(f"{k}={v}" for k, v in sorted(get_params.items()))
+        sign_path = f"{path}?{qs}"
+    prehash = ts + method.upper() + sign_path + body
     sign = base64.b64encode(
         hmac.new(secret.encode(), prehash.encode(), hashlib.sha256).digest()
     ).decode()
@@ -542,7 +550,7 @@ def set_swap_leverage(
     *,
     symbol: str,
     lever: str,
-    mgn_mode: str = "isolated",
+    mgn_mode: str = "cross",
     pos_side: str = "",
 ) -> dict[str, Any]:
     """设置永续合约杠杆和保证金模式。
@@ -591,7 +599,7 @@ def place_swap_order(
     *,
     symbol: str,
     side: str,
-    pos_side: str,
+    pos_side: str = "",
     sz: str,
     lever: str = "5",
     td_mode: str = "isolated",
@@ -602,14 +610,14 @@ def place_swap_order(
 
     与现货 place_order() 的区别：
     - tdMode: "isolated" 而非 "cash"
-    - posSide 必填（双向持仓）
+    - posSide 可选（net_mode 不需要）
     - sz 是合约张数
     - 需先调 set_swap_leverage 设置杠杆
 
     Args:
         symbol: "BTC-USDT-SWAP"
         side: "buy" 开多/平空, "sell" 开空/平多
-        pos_side: "long" 或 "short"
+        pos_side: "long" 或 "short"（net_mode 下不传）
         sz: 合约张数
         lever: 杠杆（仅记录，实际需先 set_swap_leverage）
         td_mode: "isolated" 或 "cross"
@@ -619,22 +627,21 @@ def place_swap_order(
     cfg = config or load_config()
     clean = str(symbol).strip().upper()
     clean_side = str(side).strip().lower()
-    clean_pos = str(pos_side).strip().lower()
+    clean_pos = str(pos_side).strip().lower() if pos_side else ""
 
     if clean_side not in ("buy", "sell"):
         return {"status": "error", "error": "side must be buy or sell"}
-    if clean_pos not in ("long", "short"):
-        return {"status": "error", "error": "pos_side must be long or short"}
 
     path = "/api/v5/trade/order"
     body: dict[str, Any] = {
         "instId": clean,
         "tdMode": td_mode,
         "side": clean_side,
-        "posSide": clean_pos,
         "ordType": order_type,
         "sz": str(sz),
     }
+    if clean_pos:
+        body["posSide"] = clean_pos
     if order_type == "limit" and px:
         body["px"] = str(px)
 
@@ -668,7 +675,7 @@ def place_swap_stop_order(
     *,
     symbol: str,
     side: str,
-    pos_side: str,
+    pos_side: str = "",
     sz: str,
     stop_price: str,
     td_mode: str = "isolated",
@@ -681,26 +688,27 @@ def place_swap_stop_order(
     Args:
         symbol: "BTC-USDT-SWAP"
         side: 反向平仓方向（做多时 sell，做空时 buy）
-        pos_side: "long" 或 "short"
+        pos_side: "long" 或 "short"（net_mode 不传）
         sz: 合约张数
         stop_price: 触发价
     """
     cfg = config or load_config()
     clean = str(symbol).strip().upper()
     clean_side = str(side).strip().lower()
-    clean_pos = str(pos_side).strip().lower()
+    clean_pos = str(pos_side).strip().lower() if pos_side else ""
 
     path = "/api/v5/trade/order-algo"
     body: dict[str, Any] = {
         "instId": clean,
         "tdMode": td_mode,
         "side": clean_side,
-        "posSide": clean_pos,
         "ordType": "conditional",
         "sz": str(sz),
         "slTriggerPx": str(stop_price),
         "slOrdPx": "-1",
     }
+    if clean_pos:
+        body["posSide"] = clean_pos
 
     try:
         resp = httpx.post(
@@ -744,7 +752,7 @@ def calc_swap_sz(notional_usdt: float, symbol: str) -> tuple[int, float]:
     if price <= 0:
         return 0, 0.0
 
-    # 从 OKX API 查询实际 ctVal
+    # 从 OKX API 查询实际 ctVal 和 minSz
     try:
         resp = httpx.get(
             f"{OKX_API}/public/instruments",
@@ -754,16 +762,30 @@ def calc_swap_sz(notional_usdt: float, symbol: str) -> tuple[int, float]:
         data = resp.json()
         if data.get("code") == "0" and data.get("data"):
             ct_val = float(data["data"][0].get("ctVal", "10"))
+            min_sz = float(data["data"][0].get("minSz", "1"))
         else:
             ct_val = 10.0
+            min_sz = 1.0
     except Exception:
         ct_val = 10.0
+        min_sz = 1.0
 
     # ctVal × price = 每张合约的 USDT 名义价值
     contract_notional = ct_val * price
-    sz = int(notional_usdt / contract_notional) if contract_notional > 0 else 0
+    if contract_notional <= 0:
+        return 0, ct_val, min_sz
 
-    return max(sz, 0), ct_val
+    sz_float = notional_usdt / contract_notional
+    # 不足最小下单量，但能买最小下单量 → 下最小量
+    if sz_float < min_sz and notional_usdt >= min_sz * contract_notional:
+        sz_float = min_sz
+    # 取整到整手数倍数
+    sz = round(sz_float / min_sz) * min_sz if min_sz > 0 else sz_float
+    # 小于1张用小数显示
+    if sz < 1:
+        sz = round(sz, 6)
+
+    return max(sz, 0), ct_val, min_sz
 
 
 def _get_mark_price(symbol: str) -> float:

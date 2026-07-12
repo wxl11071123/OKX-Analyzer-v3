@@ -2311,6 +2311,17 @@ class FeishuChannel(BaseChannel):
     async def _on_card_action_async(self, data: Any) -> None:
         """Handle card action button click event (async)."""
         try:
+            # 加载 .env（WebSocket 通道不自动加载）
+            import os as _os
+            _env = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), ".env")
+            if _os.path.exists(_env):
+                with open(_env) as _f:
+                    for _line in _f:
+                        _line = _line.strip()
+                        if _line and not _line.startswith("#") and "=" in _line:
+                            _k, _v = _line.split("=", 1)
+                            _os.environ[_k] = _v
+
             action = data.event.action
             action_value_raw = action.value or "{}"
             try:
@@ -2333,11 +2344,20 @@ class FeishuChannel(BaseChannel):
                 await self._handle_view_positions(chat_id, open_id)
         except Exception:
             self.logger.exception("Error handling card action")
+            try:
+                loop = asyncio.get_running_loop()
+                text = json.dumps({"text": "操作失败，请稍后重试"}, ensure_ascii=False)
+                await loop.run_in_executor(
+                    None, self._send_message_sync, "open_id", data.event.operator.get("open_id", ""), "text", text
+                )
+            except Exception:
+                pass
 
     async def _handle_halt_button(self, chat_id: str, open_id: str) -> None:
         """用户点击「停止交易」→ 推送二次确认卡片。"""
-        loop = asyncio.get_running_loop()
-        confirm_card = json.dumps({
+        try:
+            loop = asyncio.get_running_loop()
+            confirm_card = json.dumps({
             "config": {"wide_screen_mode": True},
             "header": {"title": {"tag": "plain_text", "content": "确认停止交易"}, "template": "red"},
             "elements": [
@@ -2411,6 +2431,11 @@ class FeishuChannel(BaseChannel):
             )
         except Exception:
             self.logger.exception("Error handling view_positions")
+            loop = asyncio.get_running_loop()
+            text = json.dumps({"text": "获取持仓失败，请稍后再试"}, ensure_ascii=False)
+            await loop.run_in_executor(
+                None, self._send_message_sync, "open_id", open_id, "text", text
+            )
 
     @staticmethod
     def _format_tool_hint_lines(tool_hint: str) -> str:
